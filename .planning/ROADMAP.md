@@ -86,7 +86,7 @@
 |-------|-------|-----------|--------|
 | Phase 1: Foundation & Platform Setup | 4 | 4 | Complete |
 | Phase 2: CRM Core | 5 | 5 | Complete |
-| Phase 3: Ticketing & Service Desk | 4 | 0 | Not started |
+| Phase 3: Ticketing & Service Desk | 4 | 0 | Planned |
 | Phase 4: Time Tracking & Billing | 4 | 0 | Not started |
 | Phase 5: Reporting & Dashboards | 3 | 0 | Not started |
 | Phase 6: Polish & Launch Prep | 2 | 0 | Not started |

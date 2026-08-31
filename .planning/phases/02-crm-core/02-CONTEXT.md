@@ -1,0 +1,84 @@
+# Phase 2: CRM Core -- Context
+
+## Phase Goal
+Build the client data model that ticketing, billing, and reporting all depend on -- companies, sites, contacts, contracts, and assets.
+
+## Requirements Covered
+No `.planning/REQUIREMENTS.md` exists (pre-milestone-requirements-doc project). This phase relies on PROJECT.md and ROADMAP.md as the requirement source of truth:
+- Client companies & multi-site records
+- Contacts per client company
+- Contracts / service agreements per client (defines billing terms and SLA targets)
+- Asset/device tracking tied to clients and tickets (ticket linkage deferred to Phase 3 -- Asset model only needs a `ticketable` shape, no `Ticket` model exists yet)
+
+## What Already Exists (from prior phases)
+
+**Stack** (from Phase 1, unchanged): Next.js 16 (App Router) + TypeScript, Tailwind CSS v4 + shadcn/ui, PostgreSQL via Prisma 7 (`@prisma/adapter-pg` driver adapter required -- see `src/lib/db.ts`), Docker Compose (app + db), Auth.js v5 with JWT sessions (NOT database sessions -- see `01-CONTEXT.md` for why).
+
+**Prisma schema** (`prisma/schema.prisma`): `Role` enum (`technician | dispatcher | sales | finance | admin`), `User`, `Account`, `Session`, `VerificationToken` models. Datasource has no inline `url` (Prisma 7 requires `prisma7.config.ts` for connection string instead).
+
+**RBAC**: `src/lib/permissions.ts` exports `Permission` (currently `"dashboard:view" | "admin:manage_users"`), `ROLE_PERMISSIONS: Record<Role, Permission[]>`, and `can(role, permission): boolean`. This is a static, in-code matrix -- Phase 1 explicitly rejected a database-backed `Permission`/`RolePermission` schema. Phase 2 MUST extend this same `Permission` union and matrix, not introduce a new authorization mechanism.
+
+**Session/auth helpers** (`src/lib/session.ts`): `getCurrentUser()` (returns `{ id, name, email, role } | null` from the JWT session, server-only) and `requireRole(allowedRoles: Role[])` (redirects to `/unauthorized` if the current user's role is not in the allow-list; this is the authoritative server-side authorization boundary -- middleware only checks for a session cookie's presence).
+
+**Dashboard shell**: `src/app/(dashboard)/layout.tsx` (calls `getCurrentUser()`, redirects to `/login` if absent, renders `AppSidebar` + `UserMenu` + `{children}`), `src/app/(dashboard)/page.tsx` (welcome page), `src/app/(dashboard)/unauthorized/page.tsx`. `src/components/nav/app-sidebar.tsx` renders nav links gated by `can(role, permission)` -- e.g. `{can(role, "dashboard:view") && <Link href="/">Dashboard</Link>}`. Currently has "Dashboard" (all roles) and a disabled "Admin" placeholder (admin only).
+
+**Installed shadcn/ui components**: `button`, `card`, `input`, `label`, `avatar`, `dropdown-menu`, `separator`. No `table`, `select`, `tabs`, `textarea`, or `dialog` components exist yet -- any plan that needs them must run `npx shadcn@latest add {component}` (confirmed working on Node v24.19.0; `components.json` exists from Phase 1).
+
+**Dependencies** (`package.json`): No `zod` or any form-validation library installed yet. No `src/lib/actions/` or `src/lib/validations/` directories exist yet.
+
+**Environment**: Windows, Git Bash is the shell of record for verification commands (POSIX `test -f`, `grep -q` require it). Docker Compose runs `app` + `db` (Postgres 16-alpine) services.
+
+## Key Design Decisions
+
+**Architecture approach: Pragmatic** (selected from 3 competing proposals -- Minimal, Clean Architecture, Pragmatic -- presented to the user during planning).
+
+Rationale for selection: The Clean Architecture proposal's repository/service-layer indirection (`src/server/crm/{repositories,services}/*.ts`, 10+ new files) and JSON `billingConfig` blob were judged premature for a <25-user team with exactly 3 known billing types -- the layering trades real complexity today for a hypothetical future refactor, and JSON billing config sacrifices DB-level type safety with no offsetting benefit given the known-finite type set. The Minimal and Pragmatic proposals converged on nearly identical schema and RBAC approaches (flat relational schema, enum + nullable typed columns for billing type, direct `can()` extension); Pragmatic was selected specifically for its wave-parallelization opportunity in Wave 3 (Contacts/Contracts/Assets as independent plans behind a shared detail-page contract) over Minimal's more serial wave split.
+
+**Schema decisions locked in for this phase:**
+- **Company**: root entity. Has many `Site`, `Contact`, `Contract`, `Asset`. `cuid()` id, `name`, `createdAt`/`updatedAt` (matches `User` conventions). Cascade delete downward (Company delete cascades to Site/Contact/Contract/Asset), consistent with the existing `User` -> `Account`/`Session` cascade pattern.
+- **Site**: belongs to one `Company` (`companyId` FK, required). Address fields (`addressLine1`, `addressLine2` optional, `city`, `state`, `postalCode`, `country`), `isPrimary: Boolean @default(false)`.
+- **Contact**: belongs to one `Company` (`companyId` FK, required), optionally to one `Site` (`siteId` FK, nullable). `name`, `email` (optional), `phone` (optional), `title` (optional).
+- **Contract**: belongs to one `Company` (`companyId` FK, required). `billingType: BillingType` enum (`block_hour | flat_fee | hourly_breakfix`), plus nullable typed columns: `blockHours Int?`, `flatFeeAmount Decimal? @db.Decimal(10,2)`, `hourlyRate Decimal? @db.Decimal(10,2)`, `slaResponseMinutes Int?`, `slaResolutionMinutes Int?`. `startDate DateTime`, `endDate DateTime?` (nullable = open-ended/ongoing contract). This is a deliberate trade: simple, type-safe, queryable now; Phase 4's billing engine reads `billingType` + the relevant typed field directly, no JSON parsing. Accepted risk: nullable-column sprawl if Phase 4 needs more than these 5 type-specific fields -- to be resolved via an additive migration then, not a rewrite.
+- **Asset**: belongs to one `Company` (`companyId` FK, required), optionally to one `Site` (`siteId` FK, nullable). `name`, `assetType` (free-text string, e.g. "Server", "Workstation", "Firewall" -- no enum; Phase 3/5 may formalize if reporting needs it), `serialNumber` (optional), `notes` (optional, `@db.Text`). No `Ticket` relation yet -- Phase 3 will add `ticketId`/`assetId` linkage when the `Ticket` model is created; do not add a placeholder FK now.
+- All new models use `cuid()` ids and `createdAt`/`updatedAt` timestamps, matching `User`.
+
+**RBAC decisions (revised after plan critique -- see "Post-Critique Revisions" below):**
+- Extend the existing `Permission` union in `src/lib/permissions.ts` with exactly two new string literals: `"crm:view"` and `"crm:manage"`. All 5 CRM entities (Company, Site, Contact, Contract, Asset) share these two permissions -- no per-entity permission strings, since Phase 2's requirements ask for role-based (not per-entity or per-record) visibility.
+- Per PROJECT.md's role definitions, grant `"crm:view"` to all 5 roles (technician, dispatcher, sales, finance, admin) and `"crm:manage"` (create/edit/delete) to **sales, finance, admin only** -- NOT technician, NOT dispatcher. PROJECT.md's "Who It's For" describes dispatch's role as ticket/workload triage, and only "Account managers/sales" as managing "client relationships, contracts, and renewals" -- granting dispatcher write access to Companies and billing-bearing Contracts would exceed that persona's described scope. This is the one interpretive judgment call in this phase; it is recorded here so later phases don't re-litigate it.
+- **Export a single shared constant** `CRM_MANAGE_ROLES: Role[] = ["sales", "finance", "admin"]` from `src/lib/permissions.ts` (alongside `Permission`/`ROLE_PERMISSIONS`/`can`). Every CRM Server Action (companies.ts, sites.ts, contacts.ts, contracts.ts, assets.ts, across Plans 02-02 through 02-05) imports and calls `await requireRole(CRM_MANAGE_ROLES)` -- never a separately-hardcoded role array. This prevents 5 independent plans from encoding the same policy as 5 literal arrays that could drift out of sync on a future permission change.
+- Enforce via `requireRole()`/`can()` exactly as Phase 1 established -- in Server Components (page-level gate) and inside every Server Action (defense in depth, since Server Actions are directly callable and must not rely solely on the calling page having gated access). Page-level view gates (the `/clients` list and `/clients/[companyId]` detail page) must call `can(user.role, "crm:view")` directly (redirecting to `/unauthorized` if false), not a hardcoded 5-role array passed to `requireRole` -- this matches the sidebar's own documented principle ("gated through can(role, permission) -- never a hardcoded role-name comparison") and stays correct automatically if a future role is added without crm:view.
+
+**UI/routing decisions:**
+- Route group: `src/app/(dashboard)/clients/` (list at `/clients`, create at `/clients/new`, detail+tabs at `/clients/[companyId]`).
+- The detail page (`clients/[companyId]/page.tsx`) is a **shared shell** owned exclusively by Plan 02-02. It renders a tabbed layout (Sites tab built by 02-02 itself; Contacts/Contracts/Assets tabs built by 02-03/02-04/02-05 as separate, independently importable section components). This is the key mechanism that lets Wave 3 plans run without conflicting on the same file -- see "Plan Structure" below for the exact integration contract.
+- Server Actions per entity, colocated under `src/lib/actions/` (e.g. `src/lib/actions/companies.ts`, `sites.ts`, `contacts.ts`, `contracts.ts`, `assets.ts`) -- one file per entity, each plan owns only its own entity's action file(s).
+- Form validation via `zod` (not yet a dependency -- Plan 02-02 adds it to `package.json`; later plans reuse it without re-adding).
+- New shadcn components needed: `table` (list views), `select` (billing type / site dropdowns), `tabs` (detail page), `textarea` (notes/address fields). Create/edit forms use dedicated `/new` and `/[id]/edit` pages (not modals) -- simplest pattern given no `dialog` component is installed and no plan needs one.
+
+**Why these wave assignments:**
+Schema must exist before any CRUD code can reference the generated Prisma types (Wave 1 -> Wave 2/3 boundary is a hard dependency, not a preference). Company/Site (Plan 02-02) must exist and establish the shared detail-page shell before Contacts/Contracts/Assets can render as tabs inside it -- but Contacts, Contracts, and Assets have zero dependencies on each other (no shared files, no data dependencies between them), so Plans 02-03/02-04/02-05 are grouped in the same Wave 3 with no ordering dependency between them, each owning a distinct tab-section component file and distinct action file(s). (Note: whether the executing harness actually dispatches Wave 3 plans as concurrent processes or runs them one after another with no forced ordering is an execution-time detail outside this plan's control -- the file-ownership split guarantees correctness either way, so "Wave 3" here means "unordered relative to each other," not a guarantee of wall-clock concurrency.)
+
+**Trade-offs accepted:**
+- No per-record ACLs (e.g. "technician sees only assigned clients") -- acceptable now since requirements only ask for role-based visibility; flag for a future phase if per-technician client scoping becomes a real need (Phase 3 ticketing may surface this).
+- `Contract`'s nullable typed columns will have several always-null fields depending on `billingType` (e.g. a `flat_fee` contract never populates `blockHours`/`hourlyRate`) -- accepted as simpler and more type-safe than a JSON blob for exactly 3 known types.
+- Asset has no `Ticket` relation yet -- Phase 3 adds it. Do not pre-guess Phase 3's `Ticket` schema shape by adding a speculative FK now.
+
+## Plan Structure
+- **Plan 02-01 (Wave 1)**: Prisma Schema, Migration & Permissions -- Company/Site/Contact/Contract/Asset models + BillingType enum, migration, `crm:view`/`crm:manage` permission extension, `CRM_MANAGE_ROLES` shared constant
+- **Plan 02-02 (Wave 2)**: Companies & Sites CRUD + Detail Page Shell -- depends on 02-01. Owns `clients/[companyId]/page.tsx` (the shared tabbed shell), the Sites tab section, and the shared `src/components/crm/tab-types.ts` prop-type contract. Also creates placeholder stub components for Contacts/Contracts/Assets tabs so the shell compiles before Wave 3 replaces them.
+- **Plan 02-03 (Wave 3)**: Contacts CRUD -- depends on 02-02. Owns `src/components/crm/contacts-tab.tsx` and `src/lib/actions/contacts.ts`
+- **Plan 02-04 (Wave 3)**: Contracts CRUD (billing type + SLA fields) -- depends on 02-02. Owns `src/components/crm/contracts-tab.tsx` and `src/lib/actions/contracts.ts`
+- **Plan 02-05 (Wave 3)**: Assets CRUD + Nav Integration -- depends on 02-02. Owns `src/components/crm/assets-tab.tsx`, `src/lib/actions/assets.ts`, and `src/components/nav/app-sidebar.tsx` (adds the "Clients" nav link -- only this plan touches the sidebar, avoiding a Wave 3 write conflict)
+
+**Wave 3 parallel-safety contract**: Plan 02-02 creates `src/components/crm/tab-types.ts` exporting `export type CrmTabProps = { companyId: string };` -- a single shared type, not a prose description, that every tab component imports and uses as its exact prop type. Plan 02-02 then creates placeholder stub files at `src/components/crm/contacts-tab.tsx`, `src/components/crm/contracts-tab.tsx`, and `src/components/crm/assets-tab.tsx`, each a synchronous (non-`async`) function component typed `(props: CrmTabProps) => JSX.Element` that initially renders a "Coming soon" placeholder -- synchronous specifically so Wave 3 plans replacing them with `async` Server Components is an explicitly permitted, forward-compatible change (a sync function stub being replaced by an async one is a valid signature evolution; the reverse is not assumed). Plan 02-02's detail page imports and renders all three by these exact paths, passing only `companyId` as a prop -- no plan may add a second prop to any tab component, since that would require a parent-page edit outside the adding plan's file scope. Plans 02-03/02-04/02-05 then each overwrite their one stub file's body with a real implementation, importing and reusing `CrmTabProps` from `tab-types.ts` rather than re-declaring the prop type inline. This removes reliance on prose-matching alone (the original critique's HIGH finding) in favor of a shared, type-checked contract -- `tsc --noEmit` fails if any Wave 3 plan's replacement drifts from the agreed shape.
+
+## Post-Critique Revisions
+
+A plan-critique pass (pre-mortem + assumption hunting) ran against the initial decomposition and surfaced 1 CRITICAL and 3 HIGH findings, all fixed in the plan files before execution:
+
+1. **CRITICAL -- RBAC scope**: The initial decomposition granted `crm:manage` to dispatcher/sales/finance/admin. Critique found this exceeds PROJECT.md's described dispatch persona (ticket/workload triage, not client/contract ownership) -- only "Account managers/sales" are described as managing client relationships and contracts. Fixed: `crm:manage` now grants to **sales, finance, admin only**. Dispatcher retains `crm:view` (needed for ticket-triage context) but not manage.
+2. **HIGH -- Prose-only Wave 3 contract**: The original stub contract relied on matching prop signatures by description alone, with no compiler-enforced check. Fixed: Plan 02-02 now creates `src/components/crm/tab-types.ts` exporting a shared `CrmTabProps` type that all 4 tab components (Sites + the 3 Wave 3 replacements) import and use, so `tsc --noEmit` catches any drift.
+3. **HIGH -- Duplicated RBAC role arrays**: Each of 5 action files independently hardcoded `["dispatcher","sales","finance","admin"]`. Fixed: Plan 02-01 now exports a single `CRM_MANAGE_ROLES` constant from `src/lib/permissions.ts` that every action file imports, eliminating 5-way drift risk on any future policy change.
+4. **HIGH -- Asymmetric stop-gate fallbacks**: Plan 02-03 had an explicit "proceed with a noted assumption" fallback for reading the not-yet-existing `02-02-SUMMARY.md`; Plans 02-04/02-05 did not, risking inconsistent BLOCKED behavior across three otherwise-symmetric Wave 3 plans. Fixed: the same fallback language was added to 02-04 and 02-05's stop_gates.
+
+Additional MEDIUM findings addressed: page-level view gates (`/clients`, `/clients/[companyId]`) now use `can(user.role, "crm:view")` directly instead of a hardcoded 5-role array passed to `requireRole`, matching the sidebar's own documented anti-hardcoding principle. The `contacts.ts`/`contracts.ts` naming ambiguity in this document's Plan Structure section (a documentation-only typo; the actual plan YAML frontmatter was already correct) is resolved by the corrected wording above. `npm install zod`'s version-pin risk and the lack of delete-confirmation UX were noted as accepted, low-severity gaps -- not fixed, since they don't block correct execution of this phase's scope.

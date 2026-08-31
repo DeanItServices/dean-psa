@@ -1,13 +1,13 @@
 # Project State
 
 ## Current Position
-- **Phase**: 2 of 6 (planned)
-- **Status**: Phase 2 planned -- 5 plans across 3 waves
-- **Last Activity**: Phase 2 planning (2026-08-31)
+- **Phase**: 2 of 6 (executed, pending review)
+- **Status**: Phase 2 complete -- all 5 plans executed successfully
+- **Last Activity**: Phase 2 execution (2026-08-31)
 
 ## Progress
 ```
-[####················] 21% — 4/19 plans complete
+[########............] 40% — 9/22 plans complete
 ```
 
 ## Recent Decisions
@@ -33,5 +33,9 @@
   - A shared `CrmTabProps` type (`src/components/crm/tab-types.ts`) replaces prose-only prop-signature matching between Plan 02-02's placeholder stubs and the 3 Wave 3 plans that replace them — `tsc --noEmit` now catches any drift.
   - Wave 3 plans (02-04, 02-05) gained the same graceful "read the real source code, don't block on doc ambiguity" stop-gate fallback that 02-03 already had for the not-yet-existing `02-02-SUMMARY.md`.
 
+- Phase 2 execution: all 5 plans complete across 3 waves. Wave 1 (02-01 schema/migration/permissions) ran solo; Wave 2 (02-02 Company/Site CRUD + tabbed detail shell) ran solo; Wave 3 (02-03 Contacts, 02-04 Contracts, 02-05 Assets+nav) ran fully in parallel on disjoint files with zero forbidden-file violations across all 5 plans. `npx tsc --noEmit` and `npm run build` both pass cleanly on the final integrated tree.
+- Known accepted gaps carried forward from Phase 2 (not blocking, documented per-plan): no delete-confirmation UI for Sites/Contacts/Contracts/Assets; no edit-in-place UI for Company/Contract (Server Actions exist and are RBAC-gated, just not wired to a UI entry point yet); Contract `endDate < startDate` not validated. Flag for Phase 6 polish or address earlier if Phase 3/4 need them.
+- Environment note: the `legion-build-phase2` worktree initially showed a spurious `tsc` error on `src/app/layout.tsx` (`LayoutProps` type) during Plan 02-01 due to missing `.next/types` in a fresh worktree; resolved itself by Plan 02-02 once `next build` had run once. Not a code defect — flag for future worktree-based builds if seen again early in a wave.
+
 ## Next Action
-Run `/legion:build` to execute Phase 2: CRM Core
+Run `/legion:review` to verify Phase 2: CRM Core

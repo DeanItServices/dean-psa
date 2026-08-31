@@ -3,7 +3,7 @@
 ## Phases
 
 - [x] Phase 1: Foundation & Platform Setup (4 plans)
-- [ ] Phase 2: CRM Core (3 plans)
+- [x] Phase 2: CRM Core (5 plans)
 - [ ] Phase 3: Ticketing & Service Desk (4 plans)
 - [ ] Phase 4: Time Tracking & Billing (4 plans)
 - [ ] Phase 5: Reporting & Dashboards (3 plans)
@@ -27,12 +27,12 @@
 **Requirements**: Client companies & multi-site records; Contacts per client company; Contracts / service agreements per client; Asset/device tracking tied to clients and tickets
 **Recommended Agents**: engineering-backend-architect, engineering-frontend-developer, testing-api-tester
 **Success Criteria**:
-- [ ] Client companies can be created with multiple sites/locations
-- [ ] Contacts can be added and associated with a client company
-- [ ] Contracts can be created per client, capturing billing type and SLA targets
-- [ ] Assets/devices can be recorded and associated with a client
-- [ ] All CRM records are visible/editable according to role permissions from Phase 1
-**Plans**: 3
+- [x] Client companies can be created with multiple sites/locations
+- [x] Contacts can be added and associated with a client company
+- [x] Contracts can be created per client, capturing billing type and SLA targets
+- [x] Assets/devices can be recorded and associated with a client
+- [x] All CRM records are visible/editable according to role permissions from Phase 1
+**Plans**: 5
 
 ### Phase 3: Ticketing & Service Desk
 **Goal**: Deliver the core day-to-day ticketing workflow — the primary daily-use surface for technicians and dispatch.
@@ -85,7 +85,7 @@
 | Phase | Plans | Completed | Status |
 |-------|-------|-----------|--------|
 | Phase 1: Foundation & Platform Setup | 4 | 4 | Complete |
-| Phase 2: CRM Core | 3 | 0 | Not started |
+| Phase 2: CRM Core | 5 | 5 | Complete |
 | Phase 3: Ticketing & Service Desk | 4 | 0 | Not started |
 | Phase 4: Time Tracking & Billing | 4 | 0 | Not started |
 | Phase 5: Reporting & Dashboards | 3 | 0 | Not started |

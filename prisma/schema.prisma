@@ -66,3 +66,92 @@ model VerificationToken {
 
   @@unique([identifier, token])
 }
+
+enum BillingType {
+  block_hour
+  flat_fee
+  hourly_breakfix
+}
+
+model Company {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sites     Site[]
+  contacts  Contact[]
+  contracts Contract[]
+  assets    Asset[]
+}
+
+model Site {
+  id        String  @id @default(cuid())
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  addressLine1 String
+  addressLine2 String?
+  city         String
+  state        String
+  postalCode   String
+  country      String
+  isPrimary    Boolean @default(false)
+
+  contacts Contact[]
+  assets   Asset[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Contact {
+  id        String  @id @default(cuid())
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  siteId    String?
+  site      Site?   @relation(fields: [siteId], references: [id], onDelete: SetNull)
+
+  name  String
+  email String?
+  phone String?
+  title String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Contract {
+  id        String  @id @default(cuid())
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  billingType           BillingType
+  blockHours            Int?
+  flatFeeAmount         Decimal?    @db.Decimal(10, 2)
+  hourlyRate            Decimal?    @db.Decimal(10, 2)
+  slaResponseMinutes    Int?
+  slaResolutionMinutes  Int?
+
+  startDate DateTime
+  endDate   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Asset {
+  id        String  @id @default(cuid())
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  siteId    String?
+  site      Site?   @relation(fields: [siteId], references: [id], onDelete: SetNull)
+
+  name         String
+  assetType    String
+  serialNumber String?
+  notes        String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

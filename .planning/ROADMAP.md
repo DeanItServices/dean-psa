@@ -2,7 +2,7 @@
 
 ## Phases
 
-- [ ] Phase 1: Foundation & Platform Setup (3 plans)
+- [x] Phase 1: Foundation & Platform Setup (4 plans)
 - [ ] Phase 2: CRM Core (3 plans)
 - [ ] Phase 3: Ticketing & Service Desk (4 plans)
 - [ ] Phase 4: Time Tracking & Billing (4 plans)

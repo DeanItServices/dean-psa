@@ -22,13 +22,28 @@ export async function addComment(ticketId: string, formData: FormData) {
     return { error: "Comment cannot be empty" };
   }
 
-  await db.ticketComment.create({
-    data: {
-      ticketId,
-      authorId: user.id,
-      body,
-      isInternal,
-    },
+  // Customer-facing (non-internal) comments count as the response-SLA signal.
+  // Only the first such response sets firstRespondedAt -- subsequent replies
+  // must not overwrite it. Comment creation and the conditional
+  // firstRespondedAt update run in one transaction so the two writes are
+  // atomic (and to avoid a race where two concurrent first responses both
+  // read firstRespondedAt as null and both attempt the update).
+  await db.$transaction(async (tx) => {
+    await tx.ticketComment.create({
+      data: {
+        ticketId,
+        authorId: user.id,
+        body,
+        isInternal,
+      },
+    });
+
+    if (!isInternal) {
+      await tx.ticket.updateMany({
+        where: { id: ticketId, firstRespondedAt: null },
+        data: { firstRespondedAt: new Date() },
+      });
+    }
   });
 
   revalidatePath(`/tickets/${ticketId}`);

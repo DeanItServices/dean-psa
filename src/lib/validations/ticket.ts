@@ -25,11 +25,17 @@ export const ticketSchema = z.object({
 export type TicketInput = z.infer<typeof ticketSchema>;
 
 /**
- * Update schema mirrors create but omits companyId re-validation nuance --
- * updateTicket does not change status or assignedToId (those are separate
- * Server Actions: updateTicketStatus, assignTicket), so this reuses the same
- * shape; the Server Action itself only reads the fields it is responsible
- * for out of the parsed result.
+ * Update schema is narrowed to exactly the fields updateTicket persists
+ * (companyId, contactId, assetId, priority, subject, description).
+ * assignedToId, contractId, and status are intentionally omitted here --
+ * updateTicket does not change them (those are separate Server Actions:
+ * updateTicketStatus, assignTicket), and validating fields the action never
+ * writes would create drift between "what's validated" and "what's
+ * persisted" for any future caller of this schema.
  */
-export const ticketUpdateSchema = ticketSchema;
+export const ticketUpdateSchema = ticketSchema.omit({
+  assignedToId: true,
+  contractId: true,
+  status: true,
+});
 export type TicketUpdateInput = z.infer<typeof ticketUpdateSchema>;

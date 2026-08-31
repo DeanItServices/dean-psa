@@ -43,7 +43,7 @@ async function resolveActiveContract(companyId: string) {
  * success.
  */
 export async function createTicket(formData: FormData) {
-  await requireRole(TICKET_MANAGE_ROLES);
+  const user = await requireRole(TICKET_MANAGE_ROLES);
 
   const parsed = ticketSchema.safeParse({
     companyId: formData.get("companyId"),
@@ -63,6 +63,13 @@ export async function createTicket(formData: FormData) {
 
   const { companyId, contactId, assetId, assignedToId, contractId, status, priority, subject, description } =
     parsed.data;
+
+  // Only dispatcher/admin (TICKET_ASSIGN_ROLES) may set the assignee at creation time --
+  // this mirrors the dedicated assignTicket action's stricter gate. A technician (who is
+  // in TICKET_MANAGE_ROLES but not TICKET_ASSIGN_ROLES) submitting an assignedToId is
+  // silently ignored rather than rejected, so ticket creation still succeeds.
+  const canAssignOnCreate = TICKET_ASSIGN_ROLES.includes(user.role);
+  const resolvedAssignedToId = canAssignOnCreate ? (assignedToId ?? null) : null;
 
   let resolvedContractId = contractId ?? null;
   let contract = null;
@@ -87,7 +94,7 @@ export async function createTicket(formData: FormData) {
       companyId,
       contactId: contactId ?? null,
       assetId: assetId ?? null,
-      assignedToId: assignedToId ?? null,
+      assignedToId: resolvedAssignedToId,
       contractId: resolvedContractId,
       status,
       priority,
@@ -116,9 +123,6 @@ export async function updateTicket(id: string, formData: FormData) {
     companyId: formData.get("companyId"),
     contactId: formData.get("contactId") || undefined,
     assetId: formData.get("assetId") || undefined,
-    assignedToId: formData.get("assignedToId") || undefined,
-    contractId: formData.get("contractId") || undefined,
-    status: formData.get("status") || "new",
     priority: formData.get("priority") || "normal",
     subject: formData.get("subject"),
     description: formData.get("description"),

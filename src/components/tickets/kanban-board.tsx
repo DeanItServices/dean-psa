@@ -55,7 +55,26 @@ export function KanbanBoard({
   const [items, setItems] = React.useState(tickets);
   const [activeId, setActiveId] = React.useState<string | null>(null);
 
+  // Tracks whether a drag mutation is currently awaiting `updateTicketStatus`.
+  // While true, the prop-sync effect below must not overwrite the optimistic
+  // `items` state -- the parent may re-render with a new (possibly stale,
+  // pre-revalidation) `tickets` prop while the mutation is still in flight,
+  // which would otherwise race with `handleDragEnd`'s own post-await
+  // success/rollback update and clobber it or cause a visible flicker. Set at
+  // the start of the mutation and cleared once it settles (success or
+  // error); `pendingTicketsRef` remembers the latest `tickets` prop seen
+  // while a mutation was in flight so the flag-clear can check whether a
+  // *new* prop actually arrived during that window and, if so, apply it --
+  // otherwise a genuinely new prop update would sit ignored until some
+  // unrelated future prop change.
+  const isMutatingRef = React.useRef(false);
+  const pendingTicketsRef = React.useRef<KanbanTicket[] | null>(null);
+
   React.useEffect(() => {
+    if (isMutatingRef.current) {
+      pendingTicketsRef.current = tickets;
+      return;
+    }
     setItems(tickets);
   }, [tickets]);
 
@@ -99,14 +118,31 @@ export function KanbanBoard({
     if (!newStatus || newStatus === ticket.status) return;
 
     const previous = items;
+    isMutatingRef.current = true;
+    pendingTicketsRef.current = null;
     setItems((current) =>
       current.map((t) => (t.id === ticketId ? { ...t, status: newStatus } : t)),
     );
 
-    const result = await updateTicketStatus(ticketId, newStatus as never);
-    if (result?.error) {
-      // Roll back on failure (e.g. concurrent delete -- P2025).
-      setItems(previous);
+    try {
+      const result = await updateTicketStatus(ticketId, newStatus as never);
+      if (result?.error) {
+        // Roll back on failure (e.g. concurrent delete -- P2025).
+        setItems(previous);
+      }
+    } finally {
+      // Clear the in-flight flag only after this mutation's own success/
+      // rollback state update above has been applied. If a new `tickets`
+      // prop arrived while the mutation was pending (captured by the effect
+      // into `pendingTicketsRef`), apply it now -- it reflects the latest
+      // server state (e.g. a completed revalidation, or an unrelated ticket
+      // changing elsewhere) and should win over this mutation's own local
+      // result. Otherwise leave `items` as just set above.
+      isMutatingRef.current = false;
+      if (pendingTicketsRef.current) {
+        setItems(pendingTicketsRef.current);
+        pendingTicketsRef.current = null;
+      }
     }
   }
 

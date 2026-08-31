@@ -29,6 +29,9 @@ model User {
   sessions       Session[]
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
+
+  assignedTickets Ticket[]        @relation("AssignedTickets")
+  ticketComments  TicketComment[] @relation("TicketCommentAuthor")
 }
 
 model Account {
@@ -83,6 +86,7 @@ model Company {
   contacts  Contact[]
   contracts Contract[]
   assets    Asset[]
+  tickets   Ticket[]
 }
 
 model Site {
@@ -117,6 +121,8 @@ model Contact {
   phone String?
   title String?
 
+  tickets Ticket[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -136,6 +142,8 @@ model Contract {
   startDate DateTime
   endDate   DateTime?
 
+  tickets Ticket[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -152,6 +160,79 @@ model Asset {
   serialNumber String?
   notes        String? @db.Text
 
+  tickets Ticket[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+enum TicketStatus {
+  new
+  in_progress
+  waiting_on_client
+  resolved
+  closed
+}
+
+enum TicketPriority {
+  low
+  normal
+  high
+  urgent
+}
+
+enum TicketSource {
+  manual
+  email
+}
+
+model Ticket {
+  id String @id @default(cuid())
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  contactId String?
+  contact   Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+
+  assetId String?
+  asset   Asset?  @relation(fields: [assetId], references: [id], onDelete: SetNull)
+
+  assignedToId String?
+  assignedTo   User?   @relation("AssignedTickets", fields: [assignedToId], references: [id], onDelete: SetNull)
+
+  contractId String?
+  contract   Contract? @relation(fields: [contractId], references: [id], onDelete: SetNull)
+
+  status   TicketStatus   @default(new)
+  priority TicketPriority @default(normal)
+  source   TicketSource   @default(manual)
+
+  subject     String
+  description String @db.Text
+
+  slaResponseDeadline   DateTime?
+  slaResolutionDeadline DateTime?
+  firstRespondedAt      DateTime?
+  resolvedAt            DateTime?
+
+  comments TicketComment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model TicketComment {
+  id String @id @default(cuid())
+
+  ticketId String
+  ticket   Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  authorId String?
+  author   User?   @relation("TicketCommentAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+
+  body       String  @db.Text
+  isInternal Boolean @default(false)
+
+  createdAt DateTime @default(now())
 }

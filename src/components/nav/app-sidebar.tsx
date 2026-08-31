@@ -31,6 +31,16 @@ export function AppSidebar({ role }: { role: Role }) {
             </Link>
           </li>
         )}
+        {can(role, "crm:view") && (
+          <li>
+            <Link
+              href="/clients"
+              className="block rounded-md px-2 py-1.5 text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+            >
+              Clients
+            </Link>
+          </li>
+        )}
         {can(role, "admin:manage_users") && (
           <li>
             <span

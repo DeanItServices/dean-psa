@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { Role } from "@prisma/client";
 import { can } from "@/lib/permissions";
 import { Separator } from "@/components/ui/separator";
+import { cn } from "@/lib/utils";
 
 /**
  * Role-aware primary navigation. Every conditionally-rendered item is gated
@@ -32,12 +33,18 @@ export function AppSidebar({ role }: { role: Role }) {
         )}
         {can(role, "admin:manage_users") && (
           <li>
-            <Link
-              href="/admin"
-              className="block rounded-md px-2 py-1.5 text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+            <span
+              aria-disabled="true"
+              title="Admin module is not available yet"
+              className={cn(
+                "flex cursor-not-allowed items-center justify-between rounded-md px-2 py-1.5 text-sm text-sidebar-foreground/50",
+              )}
             >
               Admin
-            </Link>
+              <span className="text-xs italic text-sidebar-foreground/40">
+                (Coming soon)
+              </span>
+            </span>
           </li>
         )}
       </ul>

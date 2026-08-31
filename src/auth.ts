@@ -16,6 +16,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   ...authConfig,
   session: {
     strategy: "jwt",
+    // Shortened from Auth.js's 30-day default. Because JWT sessions are
+    // self-contained (no adapter-backed session store), there is no
+    // server-side mechanism to revoke a token early -- a leaked JWT, or one
+    // issued to a technician who is later offboarded, otherwise stays valid
+    // for the full maxAge. 8 hours bounds that exposure window to roughly
+    // one business day while still avoiding constant re-logins for an
+    // internal tool.
+    maxAge: 60 * 60 * 8,
   },
   providers: [
     Credentials({

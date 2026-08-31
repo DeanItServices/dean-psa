@@ -23,6 +23,19 @@ const TEST_USERS: Array<{ email: string; name: string; role: Role }> = [
 ];
 
 async function main() {
+  // Guard rail: this script creates well-known-password test accounts and
+  // must never run against a real database. Nothing currently auto-invokes
+  // it, but a misconfigured DATABASE_URL pointing at production should not
+  // be enough to seed it with test credentials.
+  if (process.env.NODE_ENV === "production" && process.env.ALLOW_SEED_IN_PRODUCTION !== "true") {
+    throw new Error(
+      "Refusing to run prisma/seed.ts with NODE_ENV=production. This script creates test " +
+        "accounts with a shared, well-known password and must not be run against a real " +
+        "database. If you are certain this is intentional (e.g. a disposable staging " +
+        "environment), set ALLOW_SEED_IN_PRODUCTION=true to override.",
+    );
+  }
+
   const hashedPassword = await hash(TEST_PASSWORD, 10);
 
   for (const { email, name, role } of TEST_USERS) {

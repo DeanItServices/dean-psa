@@ -3,10 +3,13 @@ import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 
 /**
- * Returns the currently authenticated user (from the database-backed
- * session), or null if there is no session. This calls the full auth()
- * instance (Node runtime, Prisma-backed) -- only use from Server Components,
- * Server Actions, or Route Handlers, never from Edge middleware.
+ * Returns the currently authenticated user (from the JWT-based session), or
+ * null if there is no session. Sessions are self-contained signed JWTs --
+ * there is no server-side session store (Prisma adapter is not used) and no
+ * database-backed revocation mechanism. See src/auth.ts for the full
+ * rationale. This calls the full auth() instance (Node runtime) -- only use
+ * from Server Components, Server Actions, or Route Handlers, never from Edge
+ * middleware.
  */
 export async function getCurrentUser() {
   const session = await auth();

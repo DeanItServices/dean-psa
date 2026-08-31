@@ -13,9 +13,10 @@
  * this uses the Microsoft Graph API exclusively. IMAP is not implemented
  * and must not be added here.
  *
- * Plan 03-04 extends this same file to add SLA breach-check logic to the
- * same tick as pollOnce() -- see the pollOnce() function below, which is
- * intentionally structured as a standalone, separately-callable unit.
+ * Plan 03-04 extends this file with a proactive SLA breach-check pass
+ * (checkSlaBreaches()) that runs on the same tick as pollOnce()'s email
+ * ingestion -- see checkSlaBreaches() below. No second setInterval or
+ * scheduled process is introduced for this.
  */
 
 import { ClientSecretCredential } from "@azure/identity";
@@ -25,7 +26,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { db } from "../src/lib/db";
-import { computeSlaDeadlines } from "../src/lib/sla";
+import { computeSlaDeadlines, getSlaStatus } from "../src/lib/sla";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -34,6 +35,16 @@ import { computeSlaDeadlines } from "../src/lib/sla";
 const POLL_INTERVAL_MS = 90_000; // 90s -- within the 1-2 minute range from 03-CONTEXT.md
 
 const WATERMARK_FILE = path.join(process.cwd(), ".email-poller-state.json");
+
+/**
+ * Fixed, greppable marker string prefixed to every SLA breach-flag comment.
+ * The re-notification guard checks ALL of a ticket's existing comments for
+ * this marker before creating a new one -- never re-flag an already-flagged
+ * breach on a subsequent tick. Do not change this string without considering
+ * that any comment already in the database used it to represent "already
+ * flagged."
+ */
+const SLA_BREACH_MARKER = "[SLA BREACH]";
 
 /** Required environment variables. Fail fast and loud if any is missing. */
 function requireEnv(name: string): string {
@@ -187,6 +198,115 @@ async function resolveActiveContract(companyId: string) {
 }
 
 // ---------------------------------------------------------------------------
+// SLA breach-check pass (Plan 03-04)
+// ---------------------------------------------------------------------------
+//
+// Runs on the SAME tick as email polling (called from within pollOnce()
+// below) -- per 03-CONTEXT.md's explicit "SAME poller process, on the same
+// tick" decision, no second setInterval or scheduled process is introduced
+// here. Detects open tickets that have newly breached their SLA resolution
+// deadline and flags each with exactly one guarded internal TicketComment,
+// using the marker-string-presence check as the re-notification guard
+// (no new schema column -- a schema change is out of scope for this plan).
+
+/** Minimal ticket shape needed by getSlaStatus() plus id/subject for logging
+ * and comments for the re-notification guard. */
+type BreachCandidateTicket = {
+  id: string;
+  subject: string;
+  status: string;
+  slaResponseDeadline: Date | null;
+  slaResolutionDeadline: Date | null;
+  firstRespondedAt: Date | null;
+  resolvedAt: Date | null;
+  comments: { body: string }[];
+};
+
+/**
+ * checkSlaBreaches(): queries open tickets (status not resolved/closed) with
+ * a non-null slaResolutionDeadline, uses the shared getSlaStatus() helper
+ * (never a second/divergent SLA-status calculation) to determine which are
+ * newly breached, and creates exactly one internal "[SLA BREACH]"-marked
+ * TicketComment per newly-detected breach. Tickets already carrying such a
+ * comment (checked across ALL of their comments, not just the most recent)
+ * are skipped so a breach is never re-flagged on every subsequent tick.
+ * Tickets with slaResolutionDeadline: null are excluded by the query itself
+ * and would additionally never resolve to "breached" via getSlaStatus (it
+ * returns "no_sla" for them), so they are never flagged.
+ *
+ * A single ticket's comment-creation failure (e.g. transient DB error) is
+ * caught and logged per-ticket -- it must never crash the whole poller tick.
+ */
+export async function checkSlaBreaches(): Promise<void> {
+  let candidates: BreachCandidateTicket[];
+
+  try {
+    candidates = await db.ticket.findMany({
+      where: {
+        status: { notIn: ["resolved", "closed"] },
+        slaResolutionDeadline: { not: null },
+      },
+      select: {
+        id: true,
+        subject: true,
+        status: true,
+        slaResponseDeadline: true,
+        slaResolutionDeadline: true,
+        firstRespondedAt: true,
+        resolvedAt: true,
+        comments: { select: { body: true } },
+      },
+    });
+  } catch (err) {
+    // If the breach-check query itself fails (e.g. transient DB error), log
+    // and skip this tick's breach-check entirely -- do not let it take down
+    // email polling, which runs in the same tick.
+    console.error(
+      "[email-poller] Failed to query open tickets for SLA breach-check, skipping this tick's breach-check:",
+      err,
+    );
+    return;
+  }
+
+  for (const ticket of candidates) {
+    try {
+      const status = getSlaStatus(ticket);
+      if (status !== "breached") {
+        continue;
+      }
+
+      const alreadyFlagged = ticket.comments.some((comment) =>
+        comment.body.includes(SLA_BREACH_MARKER),
+      );
+      if (alreadyFlagged) {
+        continue;
+      }
+
+      const deadline = ticket.slaResolutionDeadline as Date; // non-null: guaranteed by the query filter above
+      await db.ticketComment.create({
+        data: {
+          ticketId: ticket.id,
+          authorId: null,
+          isInternal: true,
+          body: `${SLA_BREACH_MARKER} This ticket has breached its SLA resolution deadline of ${deadline.toISOString()}.`,
+        },
+      });
+
+      console.log(
+        `[email-poller] SLA breach flagged for ticket ${ticket.id} ("${ticket.subject}"), resolution deadline was ${deadline.toISOString()}.`,
+      );
+    } catch (err) {
+      // A single ticket's flag-creation failure must not crash the whole
+      // breach-check pass or the poller tick -- log and continue.
+      console.error(
+        `[email-poller] Failed to flag SLA breach for ticket ${ticket.id}, skipping:`,
+        err,
+      );
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Core poll tick
 // ---------------------------------------------------------------------------
 
@@ -204,34 +324,39 @@ export async function pollOnce(): Promise<void> {
   const since = loadWatermark();
   const messages = await fetchNewMessages(since);
 
-  if (messages.length === 0) {
-    return; // no-op, no error
-  }
+  if (messages.length > 0) {
+    let latestProcessed = since;
 
-  let latestProcessed = since;
+    for (const message of messages) {
+      const receivedAt = new Date(message.receivedDateTime);
+      if (!Number.isNaN(receivedAt.getTime()) && receivedAt > latestProcessed) {
+        latestProcessed = receivedAt;
+      }
 
-  for (const message of messages) {
-    const receivedAt = new Date(message.receivedDateTime);
-    if (!Number.isNaN(receivedAt.getTime()) && receivedAt > latestProcessed) {
-      latestProcessed = receivedAt;
+      try {
+        await processMessage(message);
+      } catch (err) {
+        // A single message failing to process must not crash the poller or
+        // block the watermark from advancing past it.
+        console.error(
+          `[email-poller] Failed to process message ${message.id}, skipping:`,
+          err,
+        );
+      }
     }
 
-    try {
-      await processMessage(message);
-    } catch (err) {
-      // A single message failing to process must not crash the poller or
-      // block the watermark from advancing past it.
-      console.error(
-        `[email-poller] Failed to process message ${message.id}, skipping:`,
-        err,
-      );
-    }
+    // Persist the watermark after the batch, past every message we attempted
+    // (whether ticketed, skipped-unmatched, or errored) so restarts do not
+    // reprocess them.
+    saveWatermark(latestProcessed);
   }
 
-  // Persist the watermark after the batch, past every message we attempted
-  // (whether ticketed, skipped-unmatched, or errored) so restarts do not
-  // reprocess them.
-  saveWatermark(latestProcessed);
+  // SLA breach-check pass (Plan 03-04): runs on this SAME tick, after email
+  // ingestion, as its own guarded step -- see checkSlaBreaches() above. This
+  // is unrelated to the watermark (it queries existing Ticket rows, not new
+  // Graph messages), so it always runs regardless of whether new email
+  // messages were found this tick.
+  await checkSlaBreaches();
 }
 
 async function processMessage(message: GraphMessage): Promise<void> {

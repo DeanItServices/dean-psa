@@ -150,3 +150,11 @@ The user authorized fixing the Prisma driver-adapter defect directly rather than
 Noted but not addressed: `npm audit` flagges 3 high-severity transitive vulnerabilities in Prisma's own build-time `@prisma/config` → `deepmerge-ts` dependency chain (a stack-exhaustion DoS in a dev-time config parser, not reachable at runtime by external input). Fixing requires downgrading to `prisma@6.12.0`, which would reintroduce the API differences Plan 01-02 deliberately avoided by pinning to stable 7.x. Left as-is; worth revisiting when Prisma publishes a patched 7.x release.
 
 Plan 01-03 is now genuinely Complete. Seeded credentials (table above) are confirmed working end-to-end and ready for Plan 01-04's login testing.
+
+## Second amendment (coordinator, during Plan 01-04): session strategy changed from database to JWT
+
+Plan 01-04's manual login testing surfaced a second, independent blocker: Auth.js v5 unconditionally rejects `session: { strategy: "database" }` combined with a Credentials-only provider list (confirmed in `node_modules/@auth/core/lib/utils/assert.js`'s `assertConfig` check — `UnsupportedStrategy: Signing in with credentials only supported if JWT strategy is enabled`). This directly contradicts this plan's original design intent (database sessions "so admins can revoke sessions later," per 01-CONTEXT.md).
+
+With user authorization, the coordinator changed `src/auth.ts` from database sessions + `PrismaAdapter` to JWT sessions (removing the adapter entirely, adding a `jwt` callback to persist `id`/`role` onto the token, changing the `session` callback to read from `token` instead of the adapter's `user` object), and added a corresponding `next-auth/jwt` module augmentation to `types/next-auth.d.ts`. Full end-to-end login was then verified working for multiple roles, including correct RBAC-gated navigation rendering and fail-secure rejection of wrong passwords. See Plan 01-04's SUMMARY.md "Resolution" section for complete detail.
+
+**Standing architectural note for future phases**: this app uses JWT sessions, not database-backed sessions. Instant server-side session revocation (e.g., emergency technician offboarding) is NOT currently possible — a future phase would need a token-blocklist table or short-lived JWTs with refresh if that becomes a real requirement.

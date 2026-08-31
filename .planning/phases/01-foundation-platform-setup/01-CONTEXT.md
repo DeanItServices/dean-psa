@@ -20,7 +20,7 @@ Rationale for selection: the Minimal proposal's ad-hoc `if/else` role checks ris
 **Stack decisions locked in for this phase:**
 - **Framework**: Next.js (App Router) + TypeScript
 - **Styling**: Tailwind CSS + shadcn/ui component library
-- **Auth**: Auth.js (NextAuth v5) with Credentials provider + Prisma adapter, bcrypt password hashing, **database sessions** (not JWT-only) -- chosen so admins can revoke sessions later (needed for staff offboarding)
+- **Auth**: Auth.js (NextAuth v5) with Credentials provider, bcrypt password hashing. **UPDATED during Plan 01-04 execution**: originally planned as database sessions (via Prisma adapter) for admin-side revocability, but Auth.js v5 unconditionally rejects `session.strategy: "database"` combined with a Credentials-only provider (confirmed in `@auth/core`'s own `assertConfig` check). Switched to **JWT sessions** instead -- the Prisma adapter is no longer used for session storage. Instant server-side session revocation is NOT currently possible; a future phase needing that (e.g. emergency staff offboarding) will need a token-blocklist table or short-lived JWTs with refresh.
 - **ORM/migrations**: Prisma against PostgreSQL
 - **RBAC model**: `Role` enum column on `User` (`technician | dispatcher | sales | finance | admin`) + a static in-code permission matrix in `src/lib/permissions.ts`, checked via a `can(user, action, resource)` helper used in both `src/middleware.ts` and server-side code paths (Server Components / Route Handlers / Server Actions) -- NOT a full `Permission`/`RolePermission` database schema
 - **Deployment**: Docker Compose running both the Next.js app AND Postgres (not Postgres-only), so a fresh clone works via `docker compose up` and dev mirrors how it will eventually run in production

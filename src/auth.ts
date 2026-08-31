@@ -1,15 +1,21 @@
 import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
-import { PrismaAdapter } from "@auth/prisma-adapter";
 import { compare } from "bcryptjs";
 import { db } from "@/lib/db";
 import { authConfig } from "./auth.config";
 
+// NOTE: Auth.js v5 hard-rejects `session.strategy: "database"` combined with
+// a Credentials-only provider list (see @auth/core's assert.js:
+// "Signing in with credentials only supported if JWT strategy is enabled").
+// The original design called for database sessions for admin-side session
+// revocation, but that combination is unsupported by the library for a
+// Credentials-only setup. Using JWT session strategy instead; the Prisma
+// adapter is not used here since JWT sessions are self-contained and do not
+// need adapter-backed session storage.
 export const { handlers, auth, signIn, signOut } = NextAuth({
   ...authConfig,
-  adapter: PrismaAdapter(db),
   session: {
-    strategy: "database",
+    strategy: "jwt",
   },
   providers: [
     Credentials({
@@ -63,10 +69,19 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   ],
   callbacks: {
     ...authConfig.callbacks,
-    session: async ({ session, user }) => {
+    jwt: async ({ token, user }) => {
+      // `user` is only defined on the initial sign-in call; persist the
+      // fields we need onto the token for every subsequent request.
+      if (user) {
+        token.id = user.id as string;
+        token.role = user.role as typeof token.role;
+      }
+      return token;
+    },
+    session: async ({ session, token }) => {
       if (session.user) {
-        session.user.id = user.id;
-        session.user.role = user.role as typeof session.user.role;
+        session.user.id = token.id as string;
+        session.user.role = token.role as typeof session.user.role;
       }
       return session;
     },

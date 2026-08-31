@@ -1,9 +1,9 @@
 # Project State
 
 ## Current Position
-- **Phase**: 2 of 6 (executed, pending review)
-- **Status**: Phase 2 complete -- all 5 plans executed successfully
-- **Last Activity**: Phase 2 execution (2026-08-31)
+- **Phase**: 2 of 6 (complete)
+- **Status**: Phase 2 complete -- review passed in 2 cycle(s)
+- **Last Activity**: Phase 2 review passed (2026-08-31)
 
 ## Progress
 ```
@@ -37,5 +37,9 @@
 - Known accepted gaps carried forward from Phase 2 (not blocking, documented per-plan): no delete-confirmation UI for Sites/Contacts/Contracts/Assets; no edit-in-place UI for Company/Contract (Server Actions exist and are RBAC-gated, just not wired to a UI entry point yet); Contract `endDate < startDate` not validated. Flag for Phase 6 polish or address earlier if Phase 3/4 need them.
 - Environment note: the `legion-build-phase2` worktree initially showed a spurious `tsc` error on `src/app/layout.tsx` (`LayoutProps` type) during Plan 02-01 due to missing `.next/types` in a fresh worktree; resolved itself by Plan 02-02 once `next build` had run once. Not a code defect — flag for future worktree-based builds if seen again early in a wave.
 
+- Phase 2 review: dynamic panel (testing-qa-verification-specialist, engineering-backend-architect, engineering-frontend-developer), 2 review cycles. Cycle 1 found 1 BLOCKER + 6 unique WARNINGs (8 SUGGESTIONs noted, not required); all 7 must-fix items resolved: empty-state `colSpan` missing on all 4 CRM tab tables (BLOCKER), `NEXT_REDIRECT` digest swallowed in 4 of 5 forms (new shared `src/lib/is-next-redirect-error.ts` helper), `sites.ts` missing P2025 handling on update/delete, `contract.ts` discriminated union missing `.strict()` (was silently stripping cross-type fields instead of rejecting them), `companies.ts` missing `deleteCompany` and missing P2025 handling on `updateCompany`. Cycle 2 re-review: unanimous PASS from all 3 reviewers, zero regressions, zero new findings. Full report: `.planning/phases/02-crm-core/02-REVIEW.md`. Deferred non-blocking suggestions (candidates for Phase 6 polish): aria-invalid/aria-describedby wiring on forms, `@@index` on Prisma FK columns, Suspense boundaries around the 4 tabs, raw checkbox vs shadcn Checkbox, duplicated site-select sentinel constant. One unresolved process risk (not code-fixable): Phase 2's migration has only been verified against a sibling Docker container, not this project's own `db` compose service (port 5432 conflict) — recommend running `prisma migrate deploy` against this project's own compose stack before Phase 3 touches the schema further.
+- **Isolation incident during cycle 1 fix dispatch**: the backend fix agent's edits initially landed directly in the shared checkout (not a worktree) because this session failed to call EnterWorktree before dispatching fix agents. Recovered via `git stash` + `EnterWorktree` + `git stash pop` before any commit — no data lost, but flag for future review-loop invocations: enter a worktree before the first fix-cycle dispatch, not just before build-phase dispatches.
+- Environment note (confirmed again in cycle 1's worktree): a fresh git worktree lacks its own `node_modules`, so `npm run build` fails with Turbopack's "Could not find the Next.js package" error even though `npx tsc --noEmit` succeeds cleanly. This is a structural worktree-isolation gap (documented since Plan 02-01), not a code defect -- future review/fix cycles in a fresh worktree should treat `tsc --noEmit` as the reliable compile check and not block on `npm run build` failing for this specific reason.
+
 ## Next Action
-Run `/legion:review` to verify Phase 2: CRM Core
+Run `/legion:plan 3` to plan Phase 3: Ticketing & Service Desk

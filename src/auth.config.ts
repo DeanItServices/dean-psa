@@ -11,7 +11,9 @@ import type { NextAuthConfig } from "next-auth";
  * It is consumed by:
  *  - src/middleware.ts (Edge runtime) for a coarse "is there a session" check
  *  - src/auth.ts (Node runtime), which spreads this config and adds the
- *    database adapter, credentials provider, and database session strategy.
+ *    credentials provider and JWT session handling (a Prisma-backed
+ *    database session strategy was originally planned but is unsupported
+ *    by Auth.js v5 for a Credentials-only provider list -- see src/auth.ts).
  *
  * Do not add providers, adapters, or Node-only imports here.
  */

@@ -10,6 +10,17 @@ services:
       AUTH_TRUST_HOST: ${AUTH_TRUST_HOST:-true}
     depends_on:
       - db
+  email-poller:
+    build: .
+    command: ["npm", "run", "email-poller"]
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/msp_psa?schema=public
+      AZURE_TENANT_ID: ${AZURE_TENANT_ID}
+      AZURE_CLIENT_ID: ${AZURE_CLIENT_ID}
+      AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET}
+      MAILBOX_ADDRESS: ${MAILBOX_ADDRESS}
+    depends_on:
+      - db
   db:
     image: postgres:16-alpine
     environment:

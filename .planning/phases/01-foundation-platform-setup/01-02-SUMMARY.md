@@ -95,3 +95,7 @@ No unresolved errors. No stop-gates were triggered (package.json existed, Docker
 
 ## files_forbidden — confirmed untouched
 Verified via `git diff --stat` against every forbidden path (`src/app/`, `src/components/`, `src/lib/auth.ts`, `src/lib/permissions.ts`, `src/lib/session.ts`, `src/middleware.ts`, `tailwind.config.ts`, `components.json`) returning no output, and `git status --short` showing no entries under `src/app/` or `src/components/`. None of `auth.ts`, `permissions.ts`, `session.ts`, or `middleware.ts` exist in the repo (correctly left for Plan 01-03).
+
+## Post-execution amendment (coordinator, during Plan 01-03)
+
+Plan 01-03's execution discovered that `src/lib/db.ts`'s `new PrismaClient()` (zero-arg) pattern throws `PrismaClientInitializationError` at runtime under the installed Prisma 7.10.0 — this version requires an explicit driver adapter, a runtime requirement that was never exercised during this plan's execution (only `migrate`/`generate`/`validate` were run here, none of which instantiate a client). With user authorization, the coordinator installed `@prisma/adapter-pg` + `pg` and updated `src/lib/db.ts` to pass a `PrismaPg` adapter to the constructor. This is a correctness fix to this plan's original deliverable, not a scope change — the singleton's public shape (`export const db: PrismaClient`) and hot-reload-safe caching behavior are unchanged. See Plan 01-03's SUMMARY.md "Resolution" section for full detail.

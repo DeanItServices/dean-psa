@@ -1,13 +1,13 @@
 # Project State
 
 ## Current Position
-- **Phase**: 3 of 6 (planned)
-- **Status**: Phase 3 planned -- 4 plans across 3 waves
-- **Last Activity**: Phase 3 planning (2026-08-31)
+- **Phase**: 3 of 6 (executed, pending review)
+- **Status**: Phase 3 complete -- all plans executed successfully
+- **Last Activity**: Phase 3 execution (2026-08-31)
 
 ## Progress
 ```
-[########............] 40% — 9/22 plans complete
+[############........] 59% — 13/22 plans complete
 ```
 
 ## Recent Decisions
@@ -50,5 +50,11 @@
   - Also recorded as an accepted (not fixed) trade-off in `03-CONTEXT.md`: inbound email from a sender unmatched to any Contact does not create a ticket in this phase (Ticket.companyId is required) -- this narrows ROADMAP's literal "via inbound email" wording for first-contact/unknown senders specifically; accepted for v1 given manual creation remains available as a fallback.
   - Deferred non-blocking suggestions (not fixed, candidates for Phase 6 polish or later): blanket `ticket:manage`-based delete lets any technician delete tickets not assigned to them (no ownership scoping); no explicit requirement that the Kanban board hide/disable a "New Ticket" CTA for view-only roles (sales/finance) -- the route-level gate still holds, this is only a dead-link UX gap; `tsx` import-path resolution for `scripts/email-poller.ts` is verified only by `tsc --noEmit`, which can't catch a runtime-only module-resolution failure -- no actual dry-run execution of the poller script is in either plan's verification commands; the `[SLA BREACH]` marker-string de-dupe guard could theoretically be spoofed/collided by a human typing that literal string into a comment.
 
+- **Phase 3 execution complete**: all 4 plans executed across 3 waves, all committed, zero failures. Wave 1 (03-01: Ticket/TicketComment schema, migration, ticket:view/manage/assign RBAC, `src/lib/sla.ts`) ran solo -- 11/11 verification commands passed. Wave 2 ran **sequentially, not in parallel**, per the plan-critique-added `package.json` `sequential_files` guard: 03-02 (Kanban board via `@dnd-kit`, ticket CRUD Server Actions, SlaBadge, sidebar nav) first -- 13/13 verification commands passed, then 03-03 (Microsoft Graph API email-poller script + Docker Compose service + Dockerfile runner-stage extension) second -- 21/21 verification commands passed, `package.json` merged additively with zero conflicts between the two agents' dependency additions. Wave 3 (03-04: SLA breach escalation added to the same `scripts/email-poller.ts` file via a `checkSlaBreaches()` function called from the existing tick, using a `"[SLA BREACH]"` marker-string comment as a re-notification guard instead of a new schema field) ran solo, depending on both 03-01 and 03-03 -- 5/6 verification commands passed with 1 deliberate, correctly-reasoned deviation (the frontmatter's stale `notifiedAt`/schema-field-style grep didn't match because the plan's own execution_contract explicitly mandated the comment-presence-check approach instead; the task-level `<verify>` block, which is authoritative, did not include that check). `npx tsc --noEmit` and `npx prisma validate` both pass cleanly on the final integrated tree across all 4 commits. No `files_forbidden` violations, no manual edits detected post-execution (clean working tree).
+- Plan 03-02's QA self-check (dual-role agent: Frontend Developer build + QA Verification Specialist re-check before reporting complete) explicitly confirmed by grep/read evidence: `assignTicket` uses `TICKET_ASSIGN_ROLES` (not `TICKET_MANAGE_ROLES`), Kanban empty columns render a visible message, zero `Table`/`TableCell` usage in ticket UI (colSpan requirement vacuously satisfied), `SlaBadge` has exactly one implementation, `KeyboardSensor` is present and not disabled in the Kanban drag context.
+- Plan 03-04's QA self-check confirmed: the re-notification guard checks ALL of a ticket's comments (not just the latest) for the marker string; tickets with `slaResolutionDeadline: null` are never flagged via two independent code paths (DB query filter + `getSlaStatus`'s own `"no_sla"` handling); per-ticket comment-creation failures are caught without crashing the tick; exactly one real `setInterval` call site exists in the whole file (confirmed via grep) -- no second scheduler was introduced.
+- One minor, non-blocking follow-up surfaced during 03-03 review (not fixed, out of that plan's strict `files_modified` scope): the email-poller's JSON watermark state file has no `.gitignore` entry yet. It doesn't exist in this environment (no Azure credentials available to actually run the poller), so nothing was accidentally committed, but flag for Phase 6 polish or whenever the poller is first run in a real environment -- add a `.gitignore` pattern for the watermark file at that time.
+- Known accepted gaps carried forward from Phase 3 plan critique (not blocking, documented in 03-CONTEXT.md and per-plan): unmatched-sender inbound email does not create a ticket (Ticket.companyId is required; logged and watermark-advanced, not retried forever) -- accepted trade-off, not a bug; blanket `ticket:manage`-based delete lets any technician delete tickets not assigned to them (no ownership scoping); no explicit requirement that the Kanban board hide/disable a "New Ticket" CTA for view-only roles (route-level gate still holds); `tsx` import-path resolution for `scripts/email-poller.ts` is verified only by `tsc --noEmit`, not an actual dry-run execution of the poller; the `[SLA BREACH]` marker-string guard could theoretically collide with a human typing that literal string into a comment. Candidates for Phase 6 polish or earlier if Phase 4/5 need them.
+
 ## Next Action
-Run `/legion:build` to execute Phase 3: Ticketing & Service Desk -- 4 plans across 3 waves (03-01 solo Wave 1; 03-02+03-03 parallel Wave 2; 03-04 solo Wave 3, sequential after 03-03).
+Run `/legion:review` to verify Phase 3: Ticketing & Service Desk.

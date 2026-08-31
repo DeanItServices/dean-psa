@@ -50,7 +50,7 @@ export async function ContactsTab(props: CrmTabProps) {
         <TableBody>
           {contacts.length === 0 ? (
             <TableRow>
-              <TableCell className="text-muted-foreground">
+              <TableCell colSpan={5} className="text-center text-muted-foreground">
                 No contacts yet.
               </TableCell>
             </TableRow>

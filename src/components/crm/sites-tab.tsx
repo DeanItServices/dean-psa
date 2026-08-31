@@ -42,7 +42,7 @@ export async function SitesTab(props: CrmTabProps) {
         <TableBody>
           {sites.length === 0 ? (
             <TableRow>
-              <TableCell className="text-muted-foreground">
+              <TableCell colSpan={6} className="text-center text-muted-foreground">
                 No sites yet.
               </TableCell>
             </TableRow>

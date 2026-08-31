@@ -1,5 +1,6 @@
 "use server";
 
+import { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import { requireRole } from "@/lib/session";
@@ -42,7 +43,8 @@ export async function createSite(companyId: string, formData: FormData) {
 
 /**
  * Updates an existing Site's fields in place. Same RBAC gate as
- * createSite.
+ * createSite. Catches Prisma's P2025 (record not found) and returns a
+ * friendly error instead of letting the exception propagate unhandled.
  */
 export async function updateSite(id: string, formData: FormData) {
   await requireRole(CRM_MANAGE_ROLES);
@@ -61,25 +63,41 @@ export async function updateSite(id: string, formData: FormData) {
     return { error: parsed.error.issues[0]?.message ?? "Invalid input" };
   }
 
-  const site = await db.site.update({
-    where: { id },
-    data: parsed.data,
-  });
+  try {
+    const site = await db.site.update({
+      where: { id },
+      data: parsed.data,
+    });
 
-  revalidatePath(`/clients/${site.companyId}`);
-  return { success: true };
+    revalidatePath(`/clients/${site.companyId}`);
+    return { success: true };
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2025") {
+      return { error: "Site not found" };
+    }
+    throw err;
+  }
 }
 
 /**
- * Deletes a Site. Same RBAC gate as createSite/updateSite.
+ * Deletes a Site. Same RBAC gate as createSite/updateSite. Catches
+ * Prisma's P2025 (record not found) and returns a friendly error instead
+ * of letting the exception propagate unhandled.
  */
 export async function deleteSite(id: string) {
   await requireRole(CRM_MANAGE_ROLES);
 
-  const site = await db.site.delete({
-    where: { id },
-  });
+  try {
+    const site = await db.site.delete({
+      where: { id },
+    });
 
-  revalidatePath(`/clients/${site.companyId}`);
-  return { success: true };
+    revalidatePath(`/clients/${site.companyId}`);
+    return { success: true };
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2025") {
+      return { error: "Site not found" };
+    }
+    throw err;
+  }
 }

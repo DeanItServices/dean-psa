@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { createCompany } from "@/lib/actions/companies";
+import { isNextRedirectError } from "@/lib/is-next-redirect-error";
 
 /**
  * Create-company form. Calls createCompany (a Server Action) directly on
@@ -33,13 +34,7 @@ export function CompanyForm() {
     } catch (err) {
       // Server Actions that call redirect() throw a special Next.js
       // redirect error internally that must be allowed to propagate.
-      if (
-        err &&
-        typeof err === "object" &&
-        "digest" in err &&
-        typeof (err as { digest?: unknown }).digest === "string" &&
-        (err as { digest: string }).digest.startsWith("NEXT_REDIRECT")
-      ) {
+      if (isNextRedirectError(err)) {
         throw err;
       }
       setError("Something went wrong. Please try again.");

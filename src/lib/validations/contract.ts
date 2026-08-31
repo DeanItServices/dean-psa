@@ -9,7 +9,10 @@ import { z } from "zod";
  * payload cannot satisfy the flat_fee or hourly_breakfix branches (and vice
  * versa) because zod tries only the branch matching the literal billingType
  * value and the type-specific field is required (not optional) on that
- * branch alone.
+ * branch alone. Each branch object is also `.strict()` so a payload that
+ * additionally submits another branch's field (e.g. billingType:
+ * "block_hour" plus flatFeeAmount) is rejected outright instead of having
+ * the unrelated field silently stripped.
  *
  * SLA response/resolution targets and start/end dates are shared across all
  * three billing types (per 02-CONTEXT.md's Contract schema decision) and
@@ -31,17 +34,17 @@ export const contractSchema = z.discriminatedUnion("billingType", [
     billingType: z.literal("block_hour"),
     blockHours: z.coerce.number().int().positive(),
     ...baseFields,
-  }),
+  }).strict(),
   z.object({
     billingType: z.literal("flat_fee"),
     flatFeeAmount: z.coerce.number().positive(),
     ...baseFields,
-  }),
+  }).strict(),
   z.object({
     billingType: z.literal("hourly_breakfix"),
     hourlyRate: z.coerce.number().positive(),
     ...baseFields,
-  }),
+  }).strict(),
 ]);
 
 export type ContractInput = z.infer<typeof contractSchema>;

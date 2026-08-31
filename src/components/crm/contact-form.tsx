@@ -12,6 +12,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { createContact } from "@/lib/actions/contacts";
+import { isNextRedirectError } from "@/lib/is-next-redirect-error";
 
 /** Sentinel value for "no site" -- Radix Select's Item cannot use an empty
  * string as its value, so this is mapped back to undefined before the
@@ -67,7 +68,10 @@ export function ContactForm({
       setPhone("");
       setTitle("");
       setSiteId(NO_SITE_VALUE);
-    } catch {
+    } catch (err) {
+      if (isNextRedirectError(err)) {
+        throw err;
+      }
       setError("Something went wrong. Please try again.");
     } finally {
       setIsSubmitting(false);

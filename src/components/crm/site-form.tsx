@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { createSite } from "@/lib/actions/sites";
+import { isNextRedirectError } from "@/lib/is-next-redirect-error";
 
 /**
  * Add-site form, embedded in SitesTab. Calls createSite (a Server Action)
@@ -52,7 +53,10 @@ export function SiteForm({ companyId }: { companyId: string }) {
       setPostalCode("");
       setCountry("");
       setIsPrimary(false);
-    } catch {
+    } catch (err) {
+      if (isNextRedirectError(err)) {
+        throw err;
+      }
       setError("Something went wrong. Please try again.");
     } finally {
       setIsSubmitting(false);

@@ -48,7 +48,7 @@ export async function AssetsTab(props: CrmTabProps) {
         <TableBody>
           {assets.length === 0 ? (
             <TableRow>
-              <TableCell className="text-muted-foreground">
+              <TableCell colSpan={4} className="text-center text-muted-foreground">
                 No assets yet.
               </TableCell>
             </TableRow>

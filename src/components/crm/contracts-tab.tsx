@@ -74,7 +74,7 @@ export async function ContractsTab(props: CrmTabProps) {
         <TableBody>
           {contracts.length === 0 ? (
             <TableRow>
-              <TableCell className="text-muted-foreground">
+              <TableCell colSpan={6} className="text-center text-muted-foreground">
                 No contracts yet.
               </TableCell>
             </TableRow>

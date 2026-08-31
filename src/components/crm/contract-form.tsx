@@ -12,6 +12,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { createContract } from "@/lib/actions/contracts";
+import { isNextRedirectError } from "@/lib/is-next-redirect-error";
 
 type BillingType = "block_hour" | "flat_fee" | "hourly_breakfix";
 
@@ -92,7 +93,10 @@ export function ContractForm({ companyId }: { companyId: string }) {
       setEndDate("");
       setSlaResponseMinutes("");
       setSlaResolutionMinutes("");
-    } catch {
+    } catch (err) {
+      if (isNextRedirectError(err)) {
+        throw err;
+      }
       setError("Something went wrong. Please try again.");
     } finally {
       setIsSubmitting(false);

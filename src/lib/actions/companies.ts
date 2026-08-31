@@ -1,6 +1,8 @@
 "use server";
 
+import { Prisma } from "@prisma/client";
 import { redirect } from "next/navigation";
+import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import { requireRole } from "@/lib/session";
 import { CRM_MANAGE_ROLES } from "@/lib/permissions";
@@ -34,7 +36,9 @@ export async function createCompany(formData: FormData) {
 /**
  * Updates an existing Company's fields in place. Same RBAC gate as
  * createCompany. Returns { success: true } rather than redirecting, since
- * this is used for in-place edits on the detail page.
+ * this is used for in-place edits on the detail page. Catches Prisma's
+ * P2025 (record not found) and returns a friendly error instead of letting
+ * the exception propagate unhandled.
  */
 export async function updateCompany(id: string, formData: FormData) {
   await requireRole(CRM_MANAGE_ROLES);
@@ -47,10 +51,42 @@ export async function updateCompany(id: string, formData: FormData) {
     return { error: parsed.error.issues[0]?.message ?? "Invalid input" };
   }
 
-  await db.company.update({
-    where: { id },
-    data: parsed.data,
-  });
+  try {
+    await db.company.update({
+      where: { id },
+      data: parsed.data,
+    });
 
-  return { success: true };
+    return { success: true };
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2025") {
+      return { error: "Company not found" };
+    }
+    throw err;
+  }
+}
+
+/**
+ * Deletes a Company. Same RBAC gate as createCompany/updateCompany.
+ * WARNING: deleting a Company cascades (onDelete: Cascade in
+ * prisma/schema.prisma) to ALL of its Sites, Contacts, Contracts, and
+ * Assets -- any UI that wires this up MUST add an explicit confirmation
+ * step before calling it.
+ */
+export async function deleteCompany(id: string) {
+  await requireRole(CRM_MANAGE_ROLES);
+
+  try {
+    await db.company.delete({
+      where: { id },
+    });
+
+    revalidatePath(`/clients`);
+    return { success: true };
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2025") {
+      return { error: "Company not found" };
+    }
+    throw err;
+  }
 }

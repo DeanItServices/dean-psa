@@ -13,6 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { createAsset } from "@/lib/actions/assets";
+import { isNextRedirectError } from "@/lib/is-next-redirect-error";
 
 type SiteOption = { id: string; addressLine1: string };
 
@@ -64,7 +65,10 @@ export function AssetForm({
       setSerialNumber("");
       setNotes("");
       setSiteId("none");
-    } catch {
+    } catch (err) {
+      if (isNextRedirectError(err)) {
+        throw err;
+      }
       setError("Something went wrong. Please try again.");
     } finally {
       setIsSubmitting(false);

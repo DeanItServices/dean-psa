@@ -1,13 +1,13 @@
 # Project State
 
 ## Current Position
-- **Phase**: 4 of 6 (planned)
-- **Status**: Phase 4 planned -- 6 plans across 4 waves
-- **Last Activity**: Phase 4 planning (2026-08-31)
+- **Phase**: 4 of 6 (executed, pending review)
+- **Status**: Phase 4 complete -- all 6 plans executed successfully across 4 waves
+- **Last Activity**: Phase 4 execution complete (2026-09-01)
 
 ## Progress
 ```
-[############........] 59% — 13/22 plans complete
+[#################...] 86% — 19/22 plans complete
 ```
 
 ## GitHub
@@ -75,5 +75,8 @@
   - Not fixed, accepted as non-blocking: `resolveActiveContract`'s query logic is duplicated (not shared) between `tickets.ts` and Plan 04-05's `generateInvoice`, matching an already-accepted Phase 3 pattern -- future-phase cleanup candidate. Sidebar `app-sidebar.tsx` accumulates append-only edits across 3 plans (04-04, 04-05) with no single owner file -- low risk, noted for awareness.
 - Created GitHub issue #1 for Phase 4 (label: `legion`) -- see STATE.md's GitHub section.
 
+- **Phase 4 execution complete**: all 6 plans executed across 4 waves, all committed, zero failures. Wave 1 ran sequentially per `depends_on` (04-01 schema/migration/RBAC -- independently verified the raw-SQL partial unique index exists live on the database via a direct `pg_indexes` query, not just trusting the agent's report; then 04-02 pure `billing.ts`/`timer.ts` modules). Wave 2 ran in parallel on disjoint files (04-03 timer UI/time-entry CRUD with a dual-role QA self-check; 04-04 QuickBooks OAuth scaffolding, correctly using `getCurrentUser()`+`can()` instead of `requireRole()` in the Route Handlers per the plan-critique fix -- independently confirmed via grep). Wave 3 ran solo (04-05 invoice generation) -- independently verified the cumulative-lifetime block-hour query, the `.toNumber()` Decimal conversion, and the transaction-scoped double-billing guard all match the plan exactly by reading the actual generated code. Wave 4 ran solo (04-06 QuickBooks push) -- the execution agent's own QA self-check surfaced a genuine gap it had introduced (a 2xx-but-missing-`Invoice.Id` QBO response left the `"PENDING"` claim unreleased, permanently locking the invoice) rather than hiding it; **fixed during orchestrator review before commit** to release the claim in that case too, matching the other pre-success failure paths, with a strengthened warning in the returned error message telling the admin to verify in QuickBooks before retrying. `npx tsc --noEmit` and `npm run build` both pass cleanly with zero errors on the final integrated tree (the fresh-worktree `layout.tsx` `LayoutProps` gap, present through Wave 3, resolved itself after the first successful `next build`, matching the documented Phase 2/3 environment pattern). All new routes (`/invoices`, `/invoices/[invoiceId]`, `/admin/quickbooks`, `/api/qbo/connect`, `/api/qbo/callback`) build and register correctly. No `files_forbidden` violations across any of the 6 plans.
+- Known accepted gaps carried forward from Phase 4 plan critique (not blocking, documented in 04-CONTEXT.md and per-plan): the QBO invoice payload's `SalesItemLineDetail.ItemRef.value` is hardcoded to `"1"` as a placeholder since this codebase has no Item-mapping concept between `InvoiceLineItem` and a real QBO Item entity -- flagged as a follow-up risk requiring a real Item-mapping feature before production QBO use, not fixed in this phase; QBO OAuth endpoint URLs and the invoice payload shape were never verified against Intuit's live API docs (no web fetch was performed during planning or execution) -- recommend a smoke test against a real Intuit sandbox app before production use; `resolveActiveContract`'s query logic is duplicated (not shared) between `tickets.ts` and `invoices.ts`, matching an already-accepted Phase 3 pattern; the Contract-deletion policy (never delete a Contract with billing history) is an operational assumption documented in code comments and 04-CONTEXT.md, not enforced by a schema constraint (would require `onDelete: Restrict`, out of this phase's scope). Candidates for Phase 6 polish or earlier if Phase 5 needs them.
+
 ## Next Action
-Run `/legion:build` to execute Phase 4: Time Tracking & Billing.
+Run `/legion:review` to verify Phase 4: Time Tracking & Billing.

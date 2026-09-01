@@ -5,7 +5,7 @@
 - [x] Phase 1: Foundation & Platform Setup (4 plans)
 - [x] Phase 2: CRM Core (5 plans)
 - [x] Phase 3: Ticketing & Service Desk (4 plans)
-- [ ] Phase 4: Time Tracking & Billing (6 plans)
+- [x] Phase 4: Time Tracking & Billing (6 plans)
 - [ ] Phase 5: Reporting & Dashboards (3 plans)
 - [ ] Phase 6: Polish & Launch Prep (2 plans)
 
@@ -51,11 +51,11 @@
 **Requirements**: Timer-based time entry against tickets; Contract-based billing rules; Invoice generation from logged time and contract terms; Accounting integration (QuickBooks or Xero)
 **Recommended Agents**: engineering-backend-architect, engineering-frontend-developer, testing-api-tester
 **Success Criteria**:
-- [ ] Technicians can start/stop a timer on a ticket and have it log time automatically
-- [ ] Time entries are marked billable/non-billable and tied to the ticket's client contract
-- [ ] Billing rules correctly compute charges for block-hour, flat-fee managed services, and hourly break-fix contract types
-- [ ] Invoices can be generated from a date range of logged time per client
-- [ ] Invoices can be pushed to QuickBooks or Xero via API integration
+- [x] Technicians can start/stop a timer on a ticket and have it log time automatically
+- [x] Time entries are marked billable/non-billable and tied to the ticket's client contract
+- [x] Billing rules correctly compute charges for block-hour, flat-fee managed services, and hourly break-fix contract types
+- [x] Invoices can be generated from a date range of logged time per client
+- [x] Invoices can be pushed to QuickBooks or Xero via API integration
 **Plans**: 6
 
 ### Phase 5: Reporting & Dashboards
@@ -87,6 +87,6 @@
 | Phase 1: Foundation & Platform Setup | 4 | 4 | Complete |
 | Phase 2: CRM Core | 5 | 5 | Complete |
 | Phase 3: Ticketing & Service Desk | 4 | 4 | Complete |
-| Phase 4: Time Tracking & Billing | 6 | 0 | Planned |
+| Phase 4: Time Tracking & Billing | 6 | 6 | Complete |
 | Phase 5: Reporting & Dashboards | 3 | 0 | Not started |
 | Phase 6: Polish & Launch Prep | 2 | 0 | Not started |

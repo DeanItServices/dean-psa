@@ -2,12 +2,24 @@ import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/session";
 import { can } from "@/lib/permissions";
 import { db } from "@/lib/db";
-import { getSlaCompliance, getCurrentMonthRange } from "@/lib/reporting";
+import { getSlaCompliance, getCurrentMonthRange, isValidDateString } from "@/lib/reporting";
 import { DateRangeFilter } from "@/components/reports/date-range-filter";
 import { CompanyContractFilter } from "@/components/reports/company-contract-filter";
 import { SlaComplianceSummary } from "@/components/reports/sla-compliance-summary";
 
-const DATE_SHAPE = /^\d{4}-\d{2}-\d{2}$/;
+const BILLING_TYPE_LABELS: Record<string, string> = {
+  block_hour: "Block Hours",
+  flat_fee: "Flat Fee",
+  hourly_breakfix: "Hourly Break-Fix",
+};
+
+function formatContractLabel(contract: { billingType: string; startDate: Date }): string {
+  const billingLabel = BILLING_TYPE_LABELS[contract.billingType] ?? contract.billingType;
+  const startLabel = new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(
+    contract.startDate,
+  );
+  return `${billingLabel} (started ${startLabel})`;
+}
 
 /**
  * SLA compliance report (/reports/sla). Restricted to `report:view_all`
@@ -50,8 +62,9 @@ export default async function SlaComplianceReportPage({
   const params = await searchParams;
 
   const defaultRange = getCurrentMonthRange();
-  const from = params.from && DATE_SHAPE.test(params.from) ? params.from : defaultRange.from;
-  const to = params.to && DATE_SHAPE.test(params.to) ? params.to : defaultRange.to;
+  const from =
+    params.from && isValidDateString(params.from) ? params.from : defaultRange.from;
+  const to = params.to && isValidDateString(params.to) ? params.to : defaultRange.to;
 
   const companyId = params.companyId || undefined;
   const contractId = params.contractId || undefined;
@@ -60,6 +73,14 @@ export default async function SlaComplianceReportPage({
     select: { id: true, name: true },
     orderBy: { name: "asc" },
   });
+
+  const contracts = companyId
+    ? await db.contract.findMany({
+        where: { companyId },
+        select: { id: true, billingType: true, startDate: true },
+        orderBy: { startDate: "desc" },
+      })
+    : [];
 
   const result = await getSlaCompliance(from, to, companyId, contractId);
 
@@ -73,6 +94,10 @@ export default async function SlaComplianceReportPage({
         <DateRangeFilter from={from} to={to} basePath="/reports/sla" />
         <CompanyContractFilter
           companies={companies}
+          contracts={contracts.map((contract) => ({
+            id: contract.id,
+            label: formatContractLabel(contract),
+          }))}
           selectedCompanyId={companyId}
           selectedContractId={contractId}
           basePath="/reports/sla"

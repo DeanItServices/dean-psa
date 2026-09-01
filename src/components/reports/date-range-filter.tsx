@@ -30,7 +30,13 @@ export function DateRangeFilter({
 
   function handleApply(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    router.push(`${basePath}?from=${fromValue}&to=${toValue}`);
+    // Guard against an inverted range (from > to), which would otherwise
+    // silently navigate to a query that produces an empty report with no
+    // explanation. Swap rather than block -- the user's intent (two
+    // endpoints of a range) is still honored either way.
+    const [effectiveFrom, effectiveTo] =
+      fromValue > toValue ? [toValue, fromValue] : [fromValue, toValue];
+    router.push(`${basePath}?from=${effectiveFrom}&to=${effectiveTo}`);
   }
 
   return (

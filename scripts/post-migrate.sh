@@ -19,11 +19,25 @@
 # safe to run repeatedly and safe to run against a database that already has
 # the index.
 #
-# Requires DATABASE_URL to be set (same variable Prisma itself reads).
+# Requires DATABASE_URL to be set (same variable Prisma itself reads). Unlike
+# `prisma migrate deploy`, a plain `bash` invocation does not auto-load .env,
+# so this script sources it itself (matching how it's chained in
+# package.json's db:migrate:deploy script) before falling back to whatever is
+# already in the shell environment (e.g. CI secrets).
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/../.env"
+
+if [ -z "${DATABASE_URL:-}" ] && [ -f "$ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+
 if [ -z "${DATABASE_URL:-}" ]; then
-  echo "post-migrate.sh: DATABASE_URL is not set; skipping partial-index creation." >&2
+  echo "post-migrate.sh: DATABASE_URL is not set (checked shell environment and $ENV_FILE); skipping partial-index creation." >&2
   exit 1
 fi
 

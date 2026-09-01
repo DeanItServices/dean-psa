@@ -7,7 +7,7 @@
 - [x] Phase 3: Ticketing & Service Desk (4 plans)
 - [x] Phase 4: Time Tracking & Billing (6 plans) — Complete
 - [x] Phase 5: Reporting & Dashboards (4 plans) — Complete
-- [ ] Phase 6: Polish & Launch Prep (2 plans)
+- [ ] Phase 6: Polish & Launch Prep (9 plans)
 
 ## Phase Details
 
@@ -79,7 +79,7 @@
 - [ ] Core workflows (ticket lifecycle, time entry to invoice, SLA tracking) pass end-to-end verification
 - [ ] No critical or high-severity issues open from QA review
 - [ ] **CRITICAL (carried forward from Phase 4 review)**: QuickBooksConnection's OAuth access/refresh tokens are encrypted at the application layer before being written to the database (currently stored in plaintext `@db.Text` columns) — see `.planning/phases/04-time-tracking-billing/04-REVIEW.md`
-**Plans**: 2
+**Plans**: 9
 
 ## Progress
 
@@ -90,4 +90,4 @@
 | Phase 3: Ticketing & Service Desk | 4 | 4 | Complete |
 | Phase 4: Time Tracking & Billing | 6 | 6 | Complete |
 | Phase 5: Reporting & Dashboards | 4 | 4 | Complete |
-| Phase 6: Polish & Launch Prep | 2 | 0 | Not started |
+| Phase 6: Polish & Launch Prep | 9 | 0 | Not started |

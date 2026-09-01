@@ -1,4 +1,5 @@
 import { db } from "@/lib/db";
+import { encrypt, decrypt } from "@/lib/crypto";
 
 /**
  * Thin fetch-based QuickBooks Online OAuth2 client. No SDK -- Intuit's
@@ -150,26 +151,39 @@ export async function getValidQboClient(): Promise<{ accessToken: string; realmI
     return null;
   }
 
+  let decryptedAccessToken: string;
+  let decryptedRefreshToken: string;
+  try {
+    decryptedAccessToken = decrypt(connection.accessToken);
+    decryptedRefreshToken = decrypt(connection.refreshToken);
+  } catch (err) {
+    console.error(
+      "QBO token decryption failed -- TOKEN_ENCRYPTION_KEY may be missing, rotated, or the stored data is corrupted:",
+      err,
+    );
+    return null;
+  }
+
   const expiresAt = connection.accessTokenExpiresAt.getTime();
   const needsRefresh = expiresAt - Date.now() <= REFRESH_SKEW_MS;
 
   if (!needsRefresh) {
-    return { accessToken: connection.accessToken, realmId: connection.realmId };
+    return { accessToken: decryptedAccessToken, realmId: connection.realmId };
   }
 
   try {
-    const refreshed = await refreshAccessToken(connection.refreshToken);
+    const refreshed = await refreshAccessToken(decryptedRefreshToken);
 
     const updated = await db.quickBooksConnection.update({
       where: { id: connection.id },
       data: {
-        accessToken: refreshed.accessToken,
-        refreshToken: refreshed.refreshToken,
+        accessToken: encrypt(refreshed.accessToken),
+        refreshToken: encrypt(refreshed.refreshToken),
         accessTokenExpiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
       },
     });
 
-    return { accessToken: updated.accessToken, realmId: updated.realmId };
+    return { accessToken: refreshed.accessToken, realmId: updated.realmId };
   } catch (err) {
     console.error("QBO token refresh failed:", err);
     return null;

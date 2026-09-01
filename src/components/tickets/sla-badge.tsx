@@ -33,12 +33,22 @@ const STATUS_VARIANT: Record<SlaStatus, "outline" | "default" | "secondary" | "d
   met: "default",
 };
 
+// This project's theme (src/app/globals.css) defines only the shadcn/ui
+// default token set (primary/secondary/accent/muted/destructive) -- no
+// custom success/warning semantic tokens exist. Rather than inventing new
+// tokens, on_track/met and approaching are distinguished using the closest
+// existing theme-token-based classes already used elsewhere for badges
+// (see src/components/ui/badge.tsx's variant styles): `primary` for the
+// positive/on-track states and `secondary` for the cautionary "approaching"
+// state. Both adapt automatically in dark mode since --primary/--secondary
+// (and their -foreground pairs) are redefined under .dark in globals.css.
+// `breached` intentionally stays empty -- see STATUS_VARIANT below.
 const STATUS_CLASS: Record<SlaStatus, string> = {
   no_sla: "text-muted-foreground",
-  on_track: "bg-green-600 text-white [a&]:hover:bg-green-600/90",
-  approaching: "bg-yellow-500 text-black [a&]:hover:bg-yellow-500/90",
+  on_track: "bg-primary text-primary-foreground [a&]:hover:bg-primary/90",
+  approaching: "bg-secondary text-secondary-foreground [a&]:hover:bg-secondary/90",
   breached: "",
-  met: "bg-green-600 text-white [a&]:hover:bg-green-600/90",
+  met: "bg-primary text-primary-foreground [a&]:hover:bg-primary/90",
 };
 
 export function SlaBadge({ ticket }: { ticket: TicketForSla }) {

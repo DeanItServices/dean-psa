@@ -7,7 +7,7 @@
 - [x] Phase 3: Ticketing & Service Desk (4 plans)
 - [x] Phase 4: Time Tracking & Billing (6 plans) — Complete
 - [x] Phase 5: Reporting & Dashboards (4 plans) — Complete
-- [ ] Phase 6: Polish & Launch Prep (9 plans)
+- [x] Phase 6: Polish & Launch Prep (9 plans) — Complete
 
 ## Phase Details
 
@@ -74,11 +74,11 @@
 **Requirements**: Cross-cutting quality across all v1 modules (no new requirements — hardens Phases 1-5)
 **Recommended Agents**: engineering-frontend-developer, testing-qa-verification-specialist, infrastructure-devops-engineer, engineering-security-engineer
 **Success Criteria**:
-- [ ] UI is consistent and responsive across all modules (ticketing, CRM, billing, reporting)
-- [ ] Docker-based deployment is documented and reproducible on the MSP's own infrastructure
-- [ ] Core workflows (ticket lifecycle, time entry to invoice, SLA tracking) pass end-to-end verification
-- [ ] No critical or high-severity issues open from QA review
-- [ ] **CRITICAL (carried forward from Phase 4 review)**: QuickBooksConnection's OAuth access/refresh tokens are encrypted at the application layer before being written to the database (currently stored in plaintext `@db.Text` columns) — see `.planning/phases/04-time-tracking-billing/04-REVIEW.md`
+- [x] UI is consistent and responsive across all modules (ticketing, CRM, billing, reporting) — loading/error boundaries, Kanban responsive breakpoint, SlaBadge theme tokens (06-05)
+- [x] Docker-based deployment is documented and reproducible on the MSP's own infrastructure — `DEPLOYMENT.md` (06-09)
+- [x] Core workflows (ticket lifecycle, time entry to invoice, SLA tracking) pass end-to-end verification — Playwright infra + 3 E2E specs (06-04, 06-06, 06-07, 06-08); note 06-06 found `deleteTicket`'s ownership check has no UI wiring, represented as `test.fixme`, flagged for review
+- [x] No critical or high-severity issues open from QA review — ownership-scoped delete, rate limiting, defense-in-depth indexes (06-02, 06-03)
+- [x] **CRITICAL (carried forward from Phase 4 review)**: QuickBooksConnection's OAuth access/refresh tokens are encrypted at the application layer before being written to the database — AES-256-GCM via `src/lib/crypto.ts`, wired into `src/lib/qbo.ts` and `src/app/api/qbo/callback/route.ts` (06-01)
 **Plans**: 9
 
 ## Progress
@@ -90,4 +90,4 @@
 | Phase 3: Ticketing & Service Desk | 4 | 4 | Complete |
 | Phase 4: Time Tracking & Billing | 6 | 6 | Complete |
 | Phase 5: Reporting & Dashboards | 4 | 4 | Complete |
-| Phase 6: Polish & Launch Prep | 9 | 0 | Not started |
+| Phase 6: Polish & Launch Prep | 9 | 9 | Complete |

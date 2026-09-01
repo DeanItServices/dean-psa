@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { db } from "@/lib/db";
 import { exchangeCodeForTokens } from "@/lib/qbo";
+import { encrypt } from "@/lib/crypto";
 import { QBO_OAUTH_STATE_COOKIE } from "@/app/api/qbo/connect/route";
 
 /**
@@ -58,8 +59,8 @@ export async function GET(request: Request) {
     await db.quickBooksConnection.create({
       data: {
         realmId,
-        accessToken: tokens.accessToken,
-        refreshToken: tokens.refreshToken,
+        accessToken: encrypt(tokens.accessToken),
+        refreshToken: encrypt(tokens.refreshToken),
         accessTokenExpiresAt,
       },
     });

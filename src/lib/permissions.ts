@@ -17,7 +17,9 @@ export type Permission =
   | "invoice:view"
   | "invoice:manage"
   | "invoice:push_qbo"
-  | "qbo:manage";
+  | "qbo:manage"
+  | "report:view_own"
+  | "report:view_all";
 
 export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
   technician: [
@@ -26,6 +28,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "ticket:view",
     "ticket:manage",
     "timeentry:manage",
+    "report:view_own",
   ],
   dispatcher: [
     "dashboard:view",
@@ -34,8 +37,10 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "ticket:manage",
     "ticket:assign",
     "timeentry:manage",
+    "report:view_own",
+    "report:view_all",
   ],
-  sales: ["dashboard:view", "crm:view", "crm:manage", "ticket:view"],
+  sales: ["dashboard:view", "crm:view", "crm:manage", "ticket:view", "report:view_own"],
   finance: [
     "dashboard:view",
     "crm:view",
@@ -44,6 +49,8 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "invoice:view",
     "invoice:manage",
     "invoice:push_qbo",
+    "report:view_own",
+    "report:view_all",
   ],
   admin: [
     "dashboard:view",
@@ -58,6 +65,8 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "invoice:manage",
     "invoice:push_qbo",
     "qbo:manage",
+    "report:view_own",
+    "report:view_all",
   ],
 };
 
@@ -108,6 +117,18 @@ export const INVOICE_MANAGE_ROLES: Role[] = ["finance", "admin"];
  * literal role array -- see 04-CONTEXT.md's RBAC decisions.
  */
 export const QBO_MANAGE_ROLES: Role[] = ["admin"];
+
+/**
+ * Single source of truth for which roles may view cross-technician
+ * utilization, the SLA compliance report, and the client profitability
+ * report (i.e. hold "report:view_all", not just the self-scoped
+ * "report:view_own" every role has). Every reporting page/query helper
+ * imports this constant instead of hardcoding its own literal role array --
+ * see 05-CONTEXT.md's RBAC decision (dispatcher is included alongside
+ * finance/admin for workload-triage and SLA-visibility reasons; technician
+ * and sales are excluded).
+ */
+export const REPORT_VIEW_ALL_ROLES: Role[] = ["dispatcher", "finance", "admin"];
 
 /**
  * Centralized authorization check. Fail-secure: any role not present in the

@@ -226,6 +226,8 @@ model Ticket {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([companyId])
 }
 
 model TicketComment {
@@ -272,6 +274,8 @@ model TimeEntry {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([startedAt])
 }
 
 model Invoice {

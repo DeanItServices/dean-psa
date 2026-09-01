@@ -6,6 +6,8 @@ import { Badge } from "@/components/ui/badge";
 import { SlaBadge } from "@/components/tickets/sla-badge";
 import { TicketCommentForm } from "@/components/tickets/ticket-comment-form";
 import { AssignmentControl } from "@/components/tickets/ticket-form";
+import { TimerControl } from "@/components/tickets/timer-control";
+import { TimeEntryList, type TimeEntryRow } from "@/components/tickets/time-entry-list";
 
 /**
  * Ticket detail page (/tickets/[ticketId]). Gated with can(user.role,
@@ -65,6 +67,36 @@ export default async function TicketDetailPage({
       })
     : [];
 
+  const canManageTimeEntries = can(user.role, "timeentry:manage");
+
+  // The user's currently-running timer, if any -- fetched across ALL
+  // tickets (not scoped to this one) so a technician who has a timer
+  // running on a different ticket sees an informative "already running"
+  // state (via TimerControl's server-side error path) rather than a
+  // silently-failing Start button that looks like it should work here.
+  const runningEntry = canManageTimeEntries
+    ? await db.timeEntry.findFirst({
+        where: { userId: user.id, endedAt: null },
+        select: { id: true, startedAt: true, ticketId: true },
+      })
+    : null;
+
+  const timeEntries = await db.timeEntry.findMany({
+    where: { ticketId: ticket.id },
+    orderBy: { startedAt: "desc" },
+    include: { user: { select: { id: true, name: true, email: true } } },
+  });
+
+  const timeEntryRows: TimeEntryRow[] = timeEntries.map((entry) => ({
+    id: entry.id,
+    technicianName: entry.user?.name ?? entry.user?.email ?? "Unknown",
+    durationMinutes: entry.durationMinutes,
+    isBillable: entry.isBillable,
+    notes: entry.notes,
+    isRunning: entry.endedAt === null,
+    isInvoiced: entry.invoiceLineItemId !== null,
+  }));
+
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-2">
@@ -101,6 +133,29 @@ export default async function TicketDetailPage({
           Assigned to: {ticket.assignedTo ? ticket.assignedTo.name ?? ticket.assignedTo.email : "Unassigned"}
         </p>
       )}
+
+      <div className="flex flex-col gap-4 rounded-md border p-4">
+        <h2 className="text-lg font-semibold">Time Tracking</h2>
+
+        {canManageTimeEntries && (
+          <TimerControl
+            ticketId={ticket.id}
+            runningEntry={
+              runningEntry && runningEntry.ticketId === ticket.id
+                ? { id: runningEntry.id, startedAt: runningEntry.startedAt }
+                : null
+            }
+          />
+        )}
+
+        {canManageTimeEntries && runningEntry && runningEntry.ticketId !== ticket.id && (
+          <p className="text-sm text-muted-foreground">
+            You have a timer running on a different ticket. Stop it before starting one here.
+          </p>
+        )}
+
+        <TimeEntryList entries={timeEntryRows} canManage={canManageTimeEntries} />
+      </div>
 
       <div className="flex flex-col gap-4">
         <h2 className="text-lg font-semibold">Comments</h2>

@@ -32,6 +32,7 @@ model User {
 
   assignedTickets Ticket[]        @relation("AssignedTickets")
   ticketComments  TicketComment[] @relation("TicketCommentAuthor")
+  timeEntries     TimeEntry[]
 }
 
 model Account {
@@ -77,16 +78,18 @@ enum BillingType {
 }
 
 model Company {
-  id        String   @id @default(cuid())
-  name      String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id            String   @id @default(cuid())
+  name          String
+  qboCustomerId String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   sites     Site[]
   contacts  Contact[]
   contracts Contract[]
   assets    Asset[]
   tickets   Ticket[]
+  invoices  Invoice[]
 }
 
 model Site {
@@ -142,7 +145,9 @@ model Contract {
   startDate DateTime
   endDate   DateTime?
 
-  tickets Ticket[]
+  tickets     Ticket[]
+  timeEntries TimeEntry[]
+  invoices    Invoice[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -216,7 +221,8 @@ model Ticket {
   firstRespondedAt      DateTime?
   resolvedAt            DateTime?
 
-  comments TicketComment[]
+  comments    TicketComment[]
+  timeEntries TimeEntry[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -235,4 +241,87 @@ model TicketComment {
   isInternal Boolean @default(false)
 
   createdAt DateTime @default(now())
+}
+
+enum InvoiceStatus {
+  draft
+  finalized
+  pushed
+}
+
+model TimeEntry {
+  id String @id @default(cuid())
+
+  ticketId String
+  ticket   Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  contractId String?
+  contract   Contract? @relation(fields: [contractId], references: [id], onDelete: SetNull)
+
+  startedAt       DateTime
+  endedAt         DateTime?
+  durationMinutes Int?
+  isBillable      Boolean   @default(true)
+  notes           String?
+
+  invoiceLineItemId String?          @unique
+  invoiceLineItem   InvoiceLineItem? @relation(fields: [invoiceLineItemId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Invoice {
+  id String @id @default(cuid())
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  contractId String?
+  contract   Contract? @relation(fields: [contractId], references: [id], onDelete: SetNull)
+
+  periodStart DateTime
+  periodEnd   DateTime
+  status      InvoiceStatus @default(draft)
+  subtotal    Decimal       @db.Decimal(10, 2)
+  total       Decimal       @db.Decimal(10, 2)
+
+  qboInvoiceId String?
+  qboPushedAt  DateTime?
+
+  lineItems InvoiceLineItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model InvoiceLineItem {
+  id String @id @default(cuid())
+
+  invoiceId String
+  invoice   Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  description String
+  quantity    Decimal @db.Decimal(10, 2)
+  unitRate    Decimal @db.Decimal(10, 2)
+  amount      Decimal @db.Decimal(10, 2)
+
+  timeEntries TimeEntry[]
+
+  createdAt DateTime @default(now())
+}
+
+model QuickBooksConnection {
+  id String @id @default(cuid())
+
+  realmId              String
+  accessToken          String   @db.Text
+  refreshToken         String   @db.Text
+  accessTokenExpiresAt DateTime
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }

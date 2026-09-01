@@ -67,6 +67,17 @@ export async function generateInvoice(formData: FormData) {
     return { error: "Company has no active contract" };
   }
 
+  // periodEnd is a plain yyyy-mm-dd date coerced to midnight of that day by
+  // generateInvoiceSchema. Used as-is, a time entry started later that same
+  // day would be silently excluded from the period (an exclusive-boundary
+  // bug), even though a user picking "period end: 2026-08-31" expects that
+  // whole day included. This inclusive-end adjustment is ONLY for the query
+  // boundary below -- the original periodEnd (midnight) is still what gets
+  // stored on the Invoice.periodEnd column further down, so the stored
+  // record reflects the user's literal selected end date.
+  const periodEndInclusive = new Date(periodEnd);
+  periodEndInclusive.setHours(23, 59, 59, 999);
+
   // Current period's billable, uninvoiced, stopped time entries for this
   // contract. Only entries with endedAt set (timer stopped) and
   // invoiceLineItemId null (not already consumed by a prior invoice) are
@@ -77,7 +88,7 @@ export async function generateInvoice(formData: FormData) {
       isBillable: true,
       invoiceLineItemId: null,
       endedAt: { not: null },
-      startedAt: { gte: periodStart, lte: periodEnd },
+      startedAt: { gte: periodStart, lte: periodEndInclusive },
     },
   });
 

@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "db:migrate": "prisma migrate dev",
+    "db:migrate:deploy": "prisma migrate deploy && bash scripts/post-migrate.sh",
     "db:seed": "prisma db seed",
     "email-poller": "tsx scripts/email-poller.ts"
   },

@@ -38,6 +38,24 @@ function parseDateRangeBoundaries(from: string, to: string): { fromDate: Date; t
   return { fromDate, toDate };
 }
 
+// --- Mirrors src/lib/reporting.ts:isValidDateString exactly (added Cycle 2
+// fix for Finding 4 -- malformed-but-shape-valid dates silently rolling
+// over, e.g. "2026-02-30" becoming March 2). Added here because the Cycle 2
+// fix commit introduced this function with zero regression coverage. ---
+function isValidDateString(s: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!match) {
+    return false;
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(year, month - 1, day);
+  return (
+    date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day
+  );
+}
+
 // --- Mirrors src/lib/reporting.ts:countWeekdays exactly ---
 function countWeekdays(fromDate: Date, toDate: Date): number {
   let count = 0;
@@ -86,6 +104,36 @@ test("parseDateRangeBoundaries: inverted range (from after to) does not throw, y
   const { fromDate, toDate } = parseDateRangeBoundaries("2026-09-30", "2026-09-01");
   assert.ok(fromDate.getTime() > toDate.getTime(), "from should be after to for this input");
   assert.equal(countWeekdays(fromDate, toDate), 0, "inverted range must yield 0 weekdays, not throw or loop forever");
+});
+
+test("isValidDateString: rejects day-of-month rollover (2026-02-30 would silently become March 2)", () => {
+  assert.equal(isValidDateString("2026-02-30"), false);
+});
+
+test("isValidDateString: rejects month rollover (2026-13-01 would silently become next January)", () => {
+  assert.equal(isValidDateString("2026-13-01"), false);
+});
+
+test("isValidDateString: rejects month zero (2026-00-15)", () => {
+  assert.equal(isValidDateString("2026-00-15"), false);
+});
+
+test("isValidDateString: rejects Feb 29 in a non-leap year (2026 is not a leap year)", () => {
+  assert.equal(isValidDateString("2026-02-29"), false);
+});
+
+test("isValidDateString: accepts Feb 29 in a leap year (2024)", () => {
+  assert.equal(isValidDateString("2024-02-29"), true);
+});
+
+test("isValidDateString: accepts a valid ordinary date", () => {
+  assert.equal(isValidDateString("2026-06-15"), true);
+});
+
+test("isValidDateString: rejects non-YYYY-MM-DD shapes (single-digit month/day, garbage, empty string)", () => {
+  assert.equal(isValidDateString("2026-2-5"), false);
+  assert.equal(isValidDateString("not-a-date"), false);
+  assert.equal(isValidDateString(""), false);
 });
 
 test("countWeekdays: single Monday counts as 1", () => {

@@ -72,12 +72,13 @@
 ### Phase 6: Polish & Launch Prep
 **Goal**: Harden the application for real daily use — performance, UX consistency, and self-hosted deployment readiness.
 **Requirements**: Cross-cutting quality across all v1 modules (no new requirements — hardens Phases 1-5)
-**Recommended Agents**: engineering-frontend-developer, testing-qa-verification-specialist, infrastructure-devops-engineer
+**Recommended Agents**: engineering-frontend-developer, testing-qa-verification-specialist, infrastructure-devops-engineer, engineering-security-engineer
 **Success Criteria**:
 - [ ] UI is consistent and responsive across all modules (ticketing, CRM, billing, reporting)
 - [ ] Docker-based deployment is documented and reproducible on the MSP's own infrastructure
 - [ ] Core workflows (ticket lifecycle, time entry to invoice, SLA tracking) pass end-to-end verification
 - [ ] No critical or high-severity issues open from QA review
+- [ ] **CRITICAL (carried forward from Phase 4 review)**: QuickBooksConnection's OAuth access/refresh tokens are encrypted at the application layer before being written to the database (currently stored in plaintext `@db.Text` columns) — see `.planning/phases/04-time-tracking-billing/04-REVIEW.md`
 **Plans**: 2
 
 ## Progress

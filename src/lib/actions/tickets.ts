@@ -220,13 +220,34 @@ export async function assignTicket(id: string, assignedToId: string | null) {
 }
 
 /**
- * Deletes a Ticket. Same RBAC gate as createTicket/updateTicket. Cascades to
- * the ticket's TicketComments (onDelete: Cascade in prisma/schema.prisma).
- * Redirects to the Kanban board on success; handles P2025 for a
- * concurrently-deleted ticket.
+ * Deletes a Ticket. Same RBAC gate as createTicket/updateTicket, plus an
+ * additional ownership check for technicians: a technician may only delete a
+ * ticket assigned to them (dispatcher/admin retain unrestricted delete,
+ * matching their broader triage/administrative scope -- see 06-CONTEXT.md's
+ * "Ownership-scoped delete approach"). This is NOT a new Permission literal
+ * in permissions.ts -- it's an in-function check layered on top of the
+ * existing ticket:manage gate. The ownership lookup happens before the
+ * delete so a rejected technician gets a clear ownership error rather than a
+ * generic not-found; a concurrently-deleted/nonexistent ticket still falls
+ * through to the existing P2025 "Ticket not found" path rather than a
+ * confusing ownership message. Cascades to the ticket's TicketComments
+ * (onDelete: Cascade in prisma/schema.prisma). Redirects to the Kanban board
+ * on success.
  */
 export async function deleteTicket(id: string) {
-  await requireRole(TICKET_MANAGE_ROLES);
+  const user = await requireRole(TICKET_MANAGE_ROLES);
+
+  if (user.role === "technician") {
+    const ticket = await db.ticket.findUnique({ where: { id }, select: { assignedToId: true } });
+
+    if (!ticket) {
+      return { error: "Ticket not found" };
+    }
+
+    if (ticket.assignedToId !== user.id) {
+      return { error: "You can only delete tickets assigned to you" };
+    }
+  }
 
   try {
     await db.ticket.delete({ where: { id } });

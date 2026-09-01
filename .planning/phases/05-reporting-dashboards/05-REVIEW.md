@@ -47,3 +47,12 @@
 ## Environment Note
 
 Live `pg_indexes` verification of the two new indexes (`Ticket.createdAt`, `Invoice(companyId, periodStart, periodEnd)`) added in cycle 1's fix was **not possible** in this review's isolated worktree (no DB connection configured). All three reviewers independently and explicitly disclosed this limitation rather than claiming verification they didn't perform. Schema/migration-file correctness was verified (valid Prisma DSL, `npx prisma validate` passes, migration SQL matches schema declarations and prior migration's naming convention). Recommend a live `pg_indexes` check against a real Docker Compose `db` service before this is considered fully closed end-to-end — matching the same documented pattern from Phase 4's index verification gaps in prior worktrees.
+
+## Post-Review Polish
+
+**Result**: Zero changes needed. The `testing-code-polisher` agent audited all 13 in-scope files against all 4 polish passes (comment cleanup, code simplification, readability, consistency normalization) and found the code already at bar — no comments to remove (every comment ties to a locked `05-CONTEXT.md` design decision or a documented bug-class regression guard), no dead code/unused imports, no vague naming, and import/string/error-handling style already consistent with the rest of the codebase.
+
+**Safety verification**: 24/24 regression tests passing before and after (no files modified); `npx tsc --noEmit` showed the identical 57 pre-existing errors before and after (all attributable to this worktree's stale/ungenerated Prisma Client and missing `node_modules`, not new regressions); `git status --short` confirmed zero files touched.
+
+**Flagged for future consideration (not applied — cross-file module-boundary change, out of auto-apply scope)**:
+- `BILLING_TYPE_LABELS` record + `formatContractLabel()` helper (~13 lines) are byte-identical duplicates between `src/app/(dashboard)/reports/sla/page.tsx` and `src/app/(dashboard)/reports/profitability/page.tsx`. Recommend extracting to a shared location (e.g. `src/lib/reporting.ts` or a new `src/lib/contract-labels.ts`) the next time either file is touched for a feature change.

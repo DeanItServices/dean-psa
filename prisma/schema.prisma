@@ -267,7 +267,7 @@ model TimeEntry {
   isBillable      Boolean   @default(true)
   notes           String?
 
-  invoiceLineItemId String?          @unique
+  invoiceLineItemId String?
   invoiceLineItem   InvoiceLineItem? @relation(fields: [invoiceLineItemId], references: [id], onDelete: SetNull)
 
   createdAt DateTime @default(now())

@@ -146,7 +146,7 @@ export default async function QuickBooksAdminPage({
             <TableBody>
               {companies.length === 0 ? (
                 <TableRow>
-                  <TableCell className="text-muted-foreground">
+                  <TableCell colSpan={3} className="text-muted-foreground">
                     No companies yet.
                   </TableCell>
                 </TableRow>

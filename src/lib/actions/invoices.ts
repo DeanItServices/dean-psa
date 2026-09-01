@@ -67,6 +67,17 @@ export async function generateInvoice(formData: FormData) {
     return { error: "Company has no active contract" };
   }
 
+  // periodEnd is a plain yyyy-mm-dd date coerced to midnight of that day by
+  // generateInvoiceSchema. Used as-is, a time entry started later that same
+  // day would be silently excluded from the period (an exclusive-boundary
+  // bug), even though a user picking "period end: 2026-08-31" expects that
+  // whole day included. This inclusive-end adjustment is ONLY for the query
+  // boundary below -- the original periodEnd (midnight) is still what gets
+  // stored on the Invoice.periodEnd column further down, so the stored
+  // record reflects the user's literal selected end date.
+  const periodEndInclusive = new Date(periodEnd);
+  periodEndInclusive.setHours(23, 59, 59, 999);
+
   // Current period's billable, uninvoiced, stopped time entries for this
   // contract. Only entries with endedAt set (timer stopped) and
   // invoiceLineItemId null (not already consumed by a prior invoice) are
@@ -77,7 +88,7 @@ export async function generateInvoice(formData: FormData) {
       isBillable: true,
       invoiceLineItemId: null,
       endedAt: { not: null },
-      startedAt: { gte: periodStart, lte: periodEnd },
+      startedAt: { gte: periodStart, lte: periodEndInclusive },
     },
   });
 
@@ -373,10 +384,11 @@ export async function pushInvoiceToQbo(invoiceId: string) {
         body: JSON.stringify(payload),
       },
     );
-  } catch {
+  } catch (err) {
     // Network-level failure (fetch itself threw) -- release the claim so
     // the invoice remains finalized/retryable, same treatment as a QBO API
     // error response.
+    console.error(`QBO push failed for invoice ${invoiceId}: network error`, err);
     await db.invoice.update({
       where: { id: invoiceId },
       data: { qboInvoiceId: null },
@@ -388,6 +400,7 @@ export async function pushInvoiceToQbo(invoiceId: string) {
 
   if (qboResponse.status === 401) {
     // OAuth token rejected -- release the claim.
+    console.error(`QBO push failed for invoice ${invoiceId}: 401 unauthorized`);
     await db.invoice.update({
       where: { id: invoiceId },
       data: { qboInvoiceId: null },
@@ -400,6 +413,10 @@ export async function pushInvoiceToQbo(invoiceId: string) {
     // the claim so the invoice remains finalized and retryable. Do not
     // leave the "PENDING" sentinel in place.
     const errorBody = await qboResponse.text().catch(() => "");
+    console.error(
+      `QBO push failed for invoice ${invoiceId}: ${qboResponse.status} ${qboResponse.statusText}`,
+      errorBody,
+    );
     await db.invoice.update({
       where: { id: invoiceId },
       data: { qboInvoiceId: null },
@@ -423,6 +440,10 @@ export async function pushInvoiceToQbo(invoiceId: string) {
     // the claim's own `where: qboInvoiceId: null` clause would never match
     // it again. Release the claim so an admin can inspect and retry rather
     // than being stuck with an unrecoverable invoice.
+    console.error(
+      `QBO push for invoice ${invoiceId}: 2xx response but missing Invoice.Id`,
+      qboData,
+    );
     await db.invoice.update({
       where: { id: invoiceId },
       data: { qboInvoiceId: null },
@@ -446,7 +467,11 @@ export async function pushInvoiceToQbo(invoiceId: string) {
         qboPushedAt: new Date(),
       },
     });
-  } catch {
+  } catch (err) {
+    console.error(
+      `QBO invoice ${qboInvoiceRealId} created for local invoice ${invoiceId} but local update failed -- requires manual reconciliation:`,
+      err,
+    );
     return {
       error: `Invoice was created in QuickBooks (id: ${qboInvoiceRealId}) but the local record could not be updated to reflect this -- contact an admin before retrying, to avoid creating a duplicate in QuickBooks.`,
     };

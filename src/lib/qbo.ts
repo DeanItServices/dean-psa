@@ -170,7 +170,8 @@ export async function getValidQboClient(): Promise<{ accessToken: string; realmI
     });
 
     return { accessToken: updated.accessToken, realmId: updated.realmId };
-  } catch {
+  } catch (err) {
+    console.error("QBO token refresh failed:", err);
     return null;
   }
 }

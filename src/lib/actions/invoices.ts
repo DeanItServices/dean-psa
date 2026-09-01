@@ -384,10 +384,11 @@ export async function pushInvoiceToQbo(invoiceId: string) {
         body: JSON.stringify(payload),
       },
     );
-  } catch {
+  } catch (err) {
     // Network-level failure (fetch itself threw) -- release the claim so
     // the invoice remains finalized/retryable, same treatment as a QBO API
     // error response.
+    console.error(`QBO push failed for invoice ${invoiceId}: network error`, err);
     await db.invoice.update({
       where: { id: invoiceId },
       data: { qboInvoiceId: null },
@@ -399,6 +400,7 @@ export async function pushInvoiceToQbo(invoiceId: string) {
 
   if (qboResponse.status === 401) {
     // OAuth token rejected -- release the claim.
+    console.error(`QBO push failed for invoice ${invoiceId}: 401 unauthorized`);
     await db.invoice.update({
       where: { id: invoiceId },
       data: { qboInvoiceId: null },
@@ -411,6 +413,10 @@ export async function pushInvoiceToQbo(invoiceId: string) {
     // the claim so the invoice remains finalized and retryable. Do not
     // leave the "PENDING" sentinel in place.
     const errorBody = await qboResponse.text().catch(() => "");
+    console.error(
+      `QBO push failed for invoice ${invoiceId}: ${qboResponse.status} ${qboResponse.statusText}`,
+      errorBody,
+    );
     await db.invoice.update({
       where: { id: invoiceId },
       data: { qboInvoiceId: null },
@@ -434,6 +440,10 @@ export async function pushInvoiceToQbo(invoiceId: string) {
     // the claim's own `where: qboInvoiceId: null` clause would never match
     // it again. Release the claim so an admin can inspect and retry rather
     // than being stuck with an unrecoverable invoice.
+    console.error(
+      `QBO push for invoice ${invoiceId}: 2xx response but missing Invoice.Id`,
+      qboData,
+    );
     await db.invoice.update({
       where: { id: invoiceId },
       data: { qboInvoiceId: null },
@@ -457,7 +467,11 @@ export async function pushInvoiceToQbo(invoiceId: string) {
         qboPushedAt: new Date(),
       },
     });
-  } catch {
+  } catch (err) {
+    console.error(
+      `QBO invoice ${qboInvoiceRealId} created for local invoice ${invoiceId} but local update failed -- requires manual reconciliation:`,
+      err,
+    );
     return {
       error: `Invoice was created in QuickBooks (id: ${qboInvoiceRealId}) but the local record could not be updated to reflect this -- contact an admin before retrying, to avoid creating a duplicate in QuickBooks.`,
     };

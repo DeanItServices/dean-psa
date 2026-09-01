@@ -4,6 +4,7 @@ import { can } from "@/lib/permissions";
 import { db } from "@/lib/db";
 import { InvoiceStatusBadge } from "@/components/invoices/invoice-status-badge";
 import { InvoiceLineTable } from "@/components/invoices/invoice-line-table";
+import { PushToQboButton } from "@/components/invoices/push-to-qbo-button";
 import { Button } from "@/components/ui/button";
 import { finalizeInvoice } from "@/lib/actions/invoices";
 
@@ -15,9 +16,9 @@ import { finalizeInvoice } from "@/lib/actions/invoices";
  * and (gated invoice:manage, only when status === "draft") a Finalize
  * button.
  *
- * NOTE: this page intentionally does NOT render any QuickBooks-related UI
- * (no "Push to QuickBooks" button, no qboInvoiceId/qboPushedAt display) --
- * that is Plan 04-06's sole responsibility, a later plan in this phase.
+ * Also renders (Plan 04-06) a PushToQboButton gated invoice:push_qbo, only
+ * when status === "finalized"; once status === "pushed", a confirmation
+ * line with the qboInvoiceId/qboPushedAt is shown instead.
  *
  * params is a Promise in this Next.js version (App Router dynamic segment
  * convention) -- must be awaited before use, matching the established
@@ -89,9 +90,16 @@ export default async function InvoiceDetailPage({
         </form>
       )}
 
-      {/* Plan 04-06 (a later plan) adds a "Push to QuickBooks" action here
-          once the invoice is finalized -- intentionally omitted from this
-          plan's output. */}
+      {can(user.role, "invoice:push_qbo") && invoice.status === "finalized" && (
+        <PushToQboButton invoiceId={invoice.id} />
+      )}
+
+      {invoice.status === "pushed" && (
+        <p className="text-sm text-muted-foreground">
+          Pushed to QuickBooks (id: {invoice.qboInvoiceId})
+          {invoice.qboPushedAt ? ` on ${invoice.qboPushedAt.toLocaleDateString()}` : null}
+        </p>
+      )}
     </div>
   );
 }

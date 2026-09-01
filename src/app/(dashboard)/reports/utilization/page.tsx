@@ -1,11 +1,13 @@
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/session";
 import { can } from "@/lib/permissions";
-import { getTechnicianUtilization, getCurrentMonthRange } from "@/lib/reporting";
+import {
+  getTechnicianUtilization,
+  getCurrentMonthRange,
+  isValidDateString,
+} from "@/lib/reporting";
 import { DateRangeFilter } from "@/components/reports/date-range-filter";
 import { UtilizationTable } from "@/components/reports/utilization-table";
-
-const DATE_SHAPE = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
  * Technician utilization report (/reports/utilization). Gated on
@@ -36,8 +38,9 @@ export default async function UtilizationReportPage({
   const params = await searchParams;
 
   const defaultRange = getCurrentMonthRange();
-  const from = params.from && DATE_SHAPE.test(params.from) ? params.from : defaultRange.from;
-  const to = params.to && DATE_SHAPE.test(params.to) ? params.to : defaultRange.to;
+  const from =
+    params.from && isValidDateString(params.from) ? params.from : defaultRange.from;
+  const to = params.to && isValidDateString(params.to) ? params.to : defaultRange.to;
 
   const canViewAll = can(user.role, "report:view_all");
 

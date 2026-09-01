@@ -19,24 +19,29 @@ const NONE_VALUE = "none";
 /**
  * Shared, reusable company/contract filter for report pages (SLA compliance,
  * client profitability). Presentational-only "use client" component -- it
- * does not fetch anything itself; the company list is fetched by the parent
- * Server Component and passed in as a prop, matching the plan's required
- * props signature.
+ * does not fetch anything itself; the company list and the (already
+ * company-scoped) contract list are fetched by the parent Server Component
+ * and passed in as props, matching the plan's required props signature.
  *
  * On change, navigates via `useRouter().push`, preserving the existing
  * `from`/`to` date-range query params (read from the current URL at
- * navigation time) while updating `companyId`. Selecting "none" strips
- * `companyId` (and, since a contract is scoped to a company, also strips any
- * previously-selected `contractId`) from the resulting URL rather than
- * passing the literal sentinel string through as a query param value.
+ * navigation time) while updating `companyId`/`contractId`. Selecting "none"
+ * strips the corresponding query param (rather than passing the literal
+ * sentinel string through as a query param value). Changing/clearing the
+ * company also strips any previously-selected `contractId`, since a
+ * contract belongs to exactly one company. The contract select is only
+ * rendered once a company is selected -- a contract cannot be chosen without
+ * first scoping to its owning company.
  */
 export function CompanyContractFilter({
   companies,
+  contracts,
   selectedCompanyId,
   selectedContractId,
   basePath,
 }: {
   companies: { id: string; name: string }[];
+  contracts: { id: string; label: string }[];
   selectedCompanyId?: string;
   selectedContractId?: string;
   basePath: string;
@@ -72,6 +77,14 @@ export function CompanyContractFilter({
     router.push(`${basePath}${query ? `?${query}` : ""}`);
   }
 
+  function handleContractChange(value: string) {
+    const contractId = value === NONE_VALUE ? undefined : value;
+    const query = buildParams({ companyId: selectedCompanyId, contractId });
+    router.push(`${basePath}${query ? `?${query}` : ""}`);
+  }
+
+  const selectedContractLabel = contracts.find((c) => c.id === selectedContractId)?.label;
+
   return (
     <div className="flex flex-wrap items-end gap-4">
       <div className="flex flex-col gap-2">
@@ -93,9 +106,30 @@ export function CompanyContractFilter({
           </SelectContent>
         </Select>
       </div>
-      {selectedContractId && (
+      {selectedCompanyId && (
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="contractId">Contract</Label>
+          <Select
+            value={selectedContractId ?? NONE_VALUE}
+            onValueChange={handleContractChange}
+          >
+            <SelectTrigger id="contractId" className="w-56">
+              <SelectValue placeholder="All contracts" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={NONE_VALUE}>All contracts</SelectItem>
+              {contracts.map((contract) => (
+                <SelectItem key={contract.id} value={contract.id}>
+                  {contract.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+      {selectedContractId && selectedContractLabel && (
         <p className="text-sm text-muted-foreground">
-          Contract filter active ({selectedContractId})
+          Contract filter active ({selectedContractLabel})
         </p>
       )}
     </div>

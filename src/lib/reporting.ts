@@ -47,6 +47,37 @@ export function parseDateRangeBoundaries(from: string, to: string): { fromDate: 
 }
 
 /**
+ * Validates that a string is both `YYYY-MM-DD`-shaped AND a real calendar
+ * date -- shape-only regex checks (e.g. `/^\d{4}-\d{2}-\d{2}$/`) accept
+ * digit-invalid dates like `2026-02-30` or `2026-13-01`, which the `Date`
+ * constructor then silently rolls over into a different, unrelated valid
+ * date (e.g. `2026-02-30` becomes March 2) with no user-facing warning.
+ *
+ * Performs round-trip validation: parses year/month/day, reconstructs a
+ * `Date` via the same local-time numeric-args form `parseDateRangeBoundaries`
+ * uses, and confirms the reconstructed year/month/day match the input
+ * exactly. Report pages should call this instead of a bare shape regex and
+ * fall back to `getCurrentMonthRange()` when it returns `false`, matching
+ * the existing malformed-input fallback behavior.
+ */
+export function isValidDateString(s: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!match) {
+    return false;
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+
+  const date = new Date(year, month - 1, day);
+
+  return (
+    date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day
+  );
+}
+
+/**
  * Returns the first and last day of the CURRENT local calendar month as
  * `YYYY-MM-DD` strings, for report pages to use as their default date range
  * when `searchParams` omits `from`/`to`.
@@ -131,52 +162,57 @@ export async function getTechnicianUtilization(
   const { fromDate, toDate } = parseDateRangeBoundaries(from, to);
   const capacityMinutes = 8 * 60 * countWeekdays(fromDate, toDate);
 
-  // Eligible-user list: a single user (self-view) or every
-  // TIME_ENTRY_MANAGE_ROLES user (cross-technician view).
-  const eligibleUsers = userId
-    ? await db.user.findMany({ where: { id: userId }, select: { id: true, name: true } })
-    : await db.user.findMany({
-        where: { role: { in: TIME_ENTRY_MANAGE_ROLES } },
-        select: { id: true, name: true },
-      });
+  try {
+    // Eligible-user list: a single user (self-view) or every
+    // TIME_ENTRY_MANAGE_ROLES user (cross-technician view).
+    const eligibleUsers = userId
+      ? await db.user.findMany({ where: { id: userId }, select: { id: true, name: true } })
+      : await db.user.findMany({
+          where: { role: { in: TIME_ENTRY_MANAGE_ROLES } },
+          select: { id: true, name: true },
+        });
 
-  if (eligibleUsers.length === 0) {
-    return [];
-  }
-
-  const eligibleUserIds = eligibleUsers.map((u) => u.id);
-
-  const grouped = await db.timeEntry.groupBy({
-    by: ["userId"],
-    where: {
-      userId: { in: eligibleUserIds },
-      startedAt: { gte: fromDate, lte: toDate },
-      endedAt: { not: null },
-    },
-    _sum: { durationMinutes: true },
-  });
-
-  const minutesByUserId = new Map<string, number>();
-  for (const row of grouped) {
-    if (row.userId != null) {
-      minutesByUserId.set(row.userId, row._sum.durationMinutes ?? 0);
+    if (eligibleUsers.length === 0) {
+      return [];
     }
+
+    const eligibleUserIds = eligibleUsers.map((u) => u.id);
+
+    const grouped = await db.timeEntry.groupBy({
+      by: ["userId"],
+      where: {
+        userId: { in: eligibleUserIds },
+        startedAt: { gte: fromDate, lte: toDate },
+        endedAt: { not: null },
+      },
+      _sum: { durationMinutes: true },
+    });
+
+    const minutesByUserId = new Map<string, number>();
+    for (const row of grouped) {
+      if (row.userId != null) {
+        minutesByUserId.set(row.userId, row._sum.durationMinutes ?? 0);
+      }
+    }
+
+    const rows: UtilizationRow[] = eligibleUsers.map((user) => {
+      const minutesLogged = minutesByUserId.get(user.id) ?? 0;
+      return {
+        userId: user.id,
+        userName: user.name ?? "(unnamed user)",
+        minutesLogged,
+        capacityMinutes,
+        utilizationPct: capacityMinutes > 0 ? (minutesLogged / capacityMinutes) * 100 : 0,
+      };
+    });
+
+    rows.sort((a, b) => a.userName.localeCompare(b.userName));
+
+    return rows;
+  } catch (error) {
+    console.error("getTechnicianUtilization: Prisma query failed", { from, to, userId, error });
+    throw new Error("Failed to load technician utilization data");
   }
-
-  const rows: UtilizationRow[] = eligibleUsers.map((user) => {
-    const minutesLogged = minutesByUserId.get(user.id) ?? 0;
-    return {
-      userId: user.id,
-      userName: user.name ?? "(unnamed user)",
-      minutesLogged,
-      capacityMinutes,
-      utilizationPct: capacityMinutes > 0 ? (minutesLogged / capacityMinutes) * 100 : 0,
-    };
-  });
-
-  rows.sort((a, b) => a.userName.localeCompare(b.userName));
-
-  return rows;
 }
 
 // ---------------------------------------------------------------------------
@@ -230,72 +266,77 @@ export async function getSlaCompliance(
     ...(contractId && { contractId }),
   };
 
-  // The met/breached classification below compares two columns on the SAME
-  // row (e.g. firstRespondedAt <= slaResponseDeadline), which Prisma's
-  // standard filter API cannot express as a `where` clause (no
-  // field-to-field comparison operator). Fetch every ticket in range that
-  // has at least one SLA deadline set, then classify each leg in JS using
-  // the exact nested AND/OR precedence locked in 05-CONTEXT.md.
-  const candidateTickets = await db.ticket.findMany({
-    where: {
-      ...baseWhere,
-      OR: [{ slaResponseDeadline: { not: null } }, { slaResolutionDeadline: { not: null } }],
-    },
-    select: {
-      slaResponseDeadline: true,
-      slaResolutionDeadline: true,
-      firstRespondedAt: true,
-      resolvedAt: true,
-    },
-  });
+  try {
+    // The met/breached classification below compares two columns on the SAME
+    // row (e.g. firstRespondedAt <= slaResponseDeadline), which Prisma's
+    // standard filter API cannot express as a `where` clause (no
+    // field-to-field comparison operator). Fetch every ticket in range that
+    // has at least one SLA deadline set, then classify each leg in JS using
+    // the exact nested AND/OR precedence locked in 05-CONTEXT.md.
+    const candidateTickets = await db.ticket.findMany({
+      where: {
+        ...baseWhere,
+        OR: [{ slaResponseDeadline: { not: null } }, { slaResolutionDeadline: { not: null } }],
+      },
+      select: {
+        slaResponseDeadline: true,
+        slaResolutionDeadline: true,
+        firstRespondedAt: true,
+        resolvedAt: true,
+      },
+    });
 
-  let respMet = 0;
-  let respBreached = 0;
-  let resoMet = 0;
-  let resoBreached = 0;
+    let respMet = 0;
+    let respBreached = 0;
+    let resoMet = 0;
+    let resoBreached = 0;
 
-  for (const ticket of candidateTickets) {
-    // Response leg
-    if (ticket.slaResponseDeadline !== null) {
-      const deadline = ticket.slaResponseDeadline;
-      if (ticket.firstRespondedAt !== null && ticket.firstRespondedAt <= deadline) {
-        respMet += 1;
-      } else if (
-        (ticket.firstRespondedAt === null && deadline < now) ||
-        (ticket.firstRespondedAt !== null && ticket.firstRespondedAt > deadline)
-      ) {
-        respBreached += 1;
+    for (const ticket of candidateTickets) {
+      // Response leg
+      if (ticket.slaResponseDeadline !== null) {
+        const deadline = ticket.slaResponseDeadline;
+        if (ticket.firstRespondedAt !== null && ticket.firstRespondedAt <= deadline) {
+          respMet += 1;
+        } else if (
+          (ticket.firstRespondedAt === null && deadline < now) ||
+          (ticket.firstRespondedAt !== null && ticket.firstRespondedAt > deadline)
+        ) {
+          respBreached += 1;
+        }
+        // else: unresolved leg still within deadline -- excluded from both.
       }
-      // else: unresolved leg still within deadline -- excluded from both.
+
+      // Resolution leg
+      if (ticket.slaResolutionDeadline !== null) {
+        const deadline = ticket.slaResolutionDeadline;
+        if (ticket.resolvedAt !== null && ticket.resolvedAt <= deadline) {
+          resoMet += 1;
+        } else if (
+          (ticket.resolvedAt === null && deadline < now) ||
+          (ticket.resolvedAt !== null && ticket.resolvedAt > deadline)
+        ) {
+          resoBreached += 1;
+        }
+        // else: unresolved leg still within deadline -- excluded from both.
+      }
     }
 
-    // Resolution leg
-    if (ticket.slaResolutionDeadline !== null) {
-      const deadline = ticket.slaResolutionDeadline;
-      if (ticket.resolvedAt !== null && ticket.resolvedAt <= deadline) {
-        resoMet += 1;
-      } else if (
-        (ticket.resolvedAt === null && deadline < now) ||
-        (ticket.resolvedAt !== null && ticket.resolvedAt > deadline)
-      ) {
-        resoBreached += 1;
-      }
-      // else: unresolved leg still within deadline -- excluded from both.
-    }
+    const responseDenominator = respMet + respBreached;
+    const resolutionDenominator = resoMet + resoBreached;
+
+    return {
+      responseMet: respMet,
+      responseBreached: respBreached,
+      responseCompliancePct: responseDenominator > 0 ? (respMet / responseDenominator) * 100 : null,
+      resolutionMet: resoMet,
+      resolutionBreached: resoBreached,
+      resolutionCompliancePct:
+        resolutionDenominator > 0 ? (resoMet / resolutionDenominator) * 100 : null,
+    };
+  } catch (error) {
+    console.error("getSlaCompliance: Prisma query failed", { from, to, companyId, contractId, error });
+    throw new Error("Failed to load SLA compliance data");
   }
-
-  const responseDenominator = respMet + respBreached;
-  const resolutionDenominator = resoMet + resoBreached;
-
-  return {
-    responseMet: respMet,
-    responseBreached: respBreached,
-    responseCompliancePct: responseDenominator > 0 ? (respMet / responseDenominator) * 100 : null,
-    resolutionMet: resoMet,
-    resolutionBreached: resoBreached,
-    resolutionCompliancePct:
-      resolutionDenominator > 0 ? (resoMet / resolutionDenominator) * 100 : null,
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -349,76 +390,81 @@ export async function getClientProfitability(
 ): Promise<ProfitabilityRow[]> {
   const { fromDate, toDate } = parseDateRangeBoundaries(from, to);
 
-  // Revenue half: real groupBy on Invoice.companyId (a direct field).
-  // Period-OVERLAP condition, not full-containment.
-  const revenueGroups = await db.invoice.groupBy({
-    by: ["companyId"],
-    where: {
-      status: { not: "draft" },
-      periodStart: { lte: toDate },
-      periodEnd: { gte: fromDate },
-      ...(companyId && { companyId }),
-      ...(contractId && { contractId }),
-    },
-    _sum: { total: true },
-  });
+  try {
+    // Revenue half: real groupBy on Invoice.companyId (a direct field).
+    // Period-OVERLAP condition, not full-containment.
+    const revenueGroups = await db.invoice.groupBy({
+      by: ["companyId"],
+      where: {
+        status: { not: "draft" },
+        periodStart: { lte: toDate },
+        periodEnd: { gte: fromDate },
+        ...(companyId && { companyId }),
+        ...(contractId && { contractId }),
+      },
+      _sum: { total: true },
+    });
 
-  const revenueByCompanyId = new Map<string, number>();
-  for (const group of revenueGroups) {
-    revenueByCompanyId.set(group.companyId, group._sum.total?.toNumber() ?? 0);
-  }
-
-  // Hours half: TimeEntry has no direct companyId column -- findMany +
-  // JS reduce through ticket.companyId, never an invalid cross-model
-  // groupBy.
-  const timeEntries = await db.timeEntry.findMany({
-    where: {
-      startedAt: { gte: fromDate, lte: toDate },
-      isBillable: true,
-      endedAt: { not: null },
-      ...(contractId && { contractId }),
-    },
-    select: {
-      durationMinutes: true,
-      ticket: { select: { companyId: true } },
-    },
-  });
-
-  const minutesByCompanyId = new Map<string, number>();
-  for (const entry of timeEntries) {
-    const entryCompanyId = entry.ticket.companyId;
-    if (companyId && entryCompanyId !== companyId) {
-      continue;
+    const revenueByCompanyId = new Map<string, number>();
+    for (const group of revenueGroups) {
+      revenueByCompanyId.set(group.companyId, group._sum.total?.toNumber() ?? 0);
     }
-    const current = minutesByCompanyId.get(entryCompanyId) ?? 0;
-    minutesByCompanyId.set(entryCompanyId, current + (entry.durationMinutes ?? 0));
+
+    // Hours half: TimeEntry has no direct companyId column -- findMany +
+    // JS reduce through ticket.companyId, never an invalid cross-model
+    // groupBy.
+    const timeEntries = await db.timeEntry.findMany({
+      where: {
+        startedAt: { gte: fromDate, lte: toDate },
+        isBillable: true,
+        endedAt: { not: null },
+        ...(contractId && { contractId }),
+      },
+      select: {
+        durationMinutes: true,
+        ticket: { select: { companyId: true } },
+      },
+    });
+
+    const minutesByCompanyId = new Map<string, number>();
+    for (const entry of timeEntries) {
+      const entryCompanyId = entry.ticket.companyId;
+      if (companyId && entryCompanyId !== companyId) {
+        continue;
+      }
+      const current = minutesByCompanyId.get(entryCompanyId) ?? 0;
+      minutesByCompanyId.set(entryCompanyId, current + (entry.durationMinutes ?? 0));
+    }
+
+    // Merge both maps by companyId -- a company present in only one map still
+    // appears, with the other value defaulting to 0.
+    const allCompanyIds = new Set<string>([
+      ...revenueByCompanyId.keys(),
+      ...minutesByCompanyId.keys(),
+    ]);
+
+    if (allCompanyIds.size === 0) {
+      return [];
+    }
+
+    const companies = await db.company.findMany({
+      where: { id: { in: Array.from(allCompanyIds) } },
+      select: { id: true, name: true },
+    });
+    const nameByCompanyId = new Map(companies.map((c) => [c.id, c.name]));
+
+    const rows: ProfitabilityRow[] = Array.from(allCompanyIds).map((id) => ({
+      companyId: id,
+      companyName: nameByCompanyId.get(id) ?? "(unknown company)",
+      billedRevenue: revenueByCompanyId.get(id) ?? 0,
+      hoursInvested: (minutesByCompanyId.get(id) ?? 0) / 60,
+    }));
+
+    rows.sort((a, b) => a.companyName.localeCompare(b.companyName));
+
+    return rows;
+  } catch (error) {
+    console.error("getClientProfitability: Prisma query failed", { from, to, companyId, contractId, error });
+    throw new Error("Failed to load client profitability data");
   }
-
-  // Merge both maps by companyId -- a company present in only one map still
-  // appears, with the other value defaulting to 0.
-  const allCompanyIds = new Set<string>([
-    ...revenueByCompanyId.keys(),
-    ...minutesByCompanyId.keys(),
-  ]);
-
-  if (allCompanyIds.size === 0) {
-    return [];
-  }
-
-  const companies = await db.company.findMany({
-    where: { id: { in: Array.from(allCompanyIds) } },
-    select: { id: true, name: true },
-  });
-  const nameByCompanyId = new Map(companies.map((c) => [c.id, c.name]));
-
-  const rows: ProfitabilityRow[] = Array.from(allCompanyIds).map((id) => ({
-    companyId: id,
-    companyName: nameByCompanyId.get(id) ?? "(unknown company)",
-    billedRevenue: revenueByCompanyId.get(id) ?? 0,
-    hoursInvested: (minutesByCompanyId.get(id) ?? 0) / 60,
-  }));
-
-  rows.sort((a, b) => a.companyName.localeCompare(b.companyName));
-
-  return rows;
 }

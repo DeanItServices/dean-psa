@@ -5,7 +5,7 @@
 - [x] Phase 1: Foundation & Platform Setup (4 plans)
 - [x] Phase 2: CRM Core (5 plans)
 - [x] Phase 3: Ticketing & Service Desk (4 plans)
-- [ ] Phase 4: Time Tracking & Billing (4 plans)
+- [ ] Phase 4: Time Tracking & Billing (6 plans)
 - [ ] Phase 5: Reporting & Dashboards (3 plans)
 - [ ] Phase 6: Polish & Launch Prep (2 plans)
 
@@ -56,7 +56,7 @@
 - [ ] Billing rules correctly compute charges for block-hour, flat-fee managed services, and hourly break-fix contract types
 - [ ] Invoices can be generated from a date range of logged time per client
 - [ ] Invoices can be pushed to QuickBooks or Xero via API integration
-**Plans**: 4
+**Plans**: 6
 
 ### Phase 5: Reporting & Dashboards
 **Goal**: Give managers and leadership visibility into technician workload, SLA health, and client profitability using data already captured by ticketing and billing.
@@ -87,6 +87,6 @@
 | Phase 1: Foundation & Platform Setup | 4 | 4 | Complete |
 | Phase 2: CRM Core | 5 | 5 | Complete |
 | Phase 3: Ticketing & Service Desk | 4 | 4 | Complete |
-| Phase 4: Time Tracking & Billing | 4 | 0 | Not started |
+| Phase 4: Time Tracking & Billing | 6 | 0 | Planned |
 | Phase 5: Reporting & Dashboards | 3 | 0 | Not started |
 | Phase 6: Polish & Launch Prep | 2 | 0 | Not started |

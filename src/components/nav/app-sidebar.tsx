@@ -51,20 +51,39 @@ export function AppSidebar({ role }: { role: Role }) {
             </Link>
           </li>
         )}
+        {can(role, "invoice:view") && (
+          <li>
+            <Link
+              href="/invoices"
+              className="block rounded-md px-2 py-1.5 text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+            >
+              Invoices
+            </Link>
+          </li>
+        )}
         {can(role, "admin:manage_users") && (
           <li>
-            <span
-              aria-disabled="true"
-              title="Admin module is not available yet"
-              className={cn(
-                "flex cursor-not-allowed items-center justify-between rounded-md px-2 py-1.5 text-sm text-sidebar-foreground/50",
-              )}
-            >
-              Admin
-              <span className="text-xs italic text-sidebar-foreground/40">
-                (Coming soon)
+            {can(role, "qbo:manage") || can(role, "admin:manage_users") ? (
+              <Link
+                href="/admin/quickbooks"
+                className="block rounded-md px-2 py-1.5 text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+              >
+                Admin
+              </Link>
+            ) : (
+              <span
+                aria-disabled="true"
+                title="Admin module is not available yet"
+                className={cn(
+                  "flex cursor-not-allowed items-center justify-between rounded-md px-2 py-1.5 text-sm text-sidebar-foreground/50",
+                )}
+              >
+                Admin
+                <span className="text-xs italic text-sidebar-foreground/40">
+                  (Coming soon)
+                </span>
               </span>
-            </span>
+            )}
           </li>
         )}
       </ul>

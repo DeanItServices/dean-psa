@@ -12,19 +12,39 @@ export type Permission =
   | "crm:manage"
   | "ticket:view"
   | "ticket:manage"
-  | "ticket:assign";
+  | "ticket:assign"
+  | "timeentry:manage"
+  | "invoice:view"
+  | "invoice:manage"
+  | "invoice:push_qbo"
+  | "qbo:manage";
 
 export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
-  technician: ["dashboard:view", "crm:view", "ticket:view", "ticket:manage"],
+  technician: [
+    "dashboard:view",
+    "crm:view",
+    "ticket:view",
+    "ticket:manage",
+    "timeentry:manage",
+  ],
   dispatcher: [
     "dashboard:view",
     "crm:view",
     "ticket:view",
     "ticket:manage",
     "ticket:assign",
+    "timeentry:manage",
   ],
   sales: ["dashboard:view", "crm:view", "crm:manage", "ticket:view"],
-  finance: ["dashboard:view", "crm:view", "crm:manage", "ticket:view"],
+  finance: [
+    "dashboard:view",
+    "crm:view",
+    "crm:manage",
+    "ticket:view",
+    "invoice:view",
+    "invoice:manage",
+    "invoice:push_qbo",
+  ],
   admin: [
     "dashboard:view",
     "admin:manage_users",
@@ -33,6 +53,11 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "ticket:view",
     "ticket:manage",
     "ticket:assign",
+    "timeentry:manage",
+    "invoice:view",
+    "invoice:manage",
+    "invoice:push_qbo",
+    "qbo:manage",
   ],
 };
 
@@ -59,6 +84,30 @@ export const TICKET_MANAGE_ROLES: Role[] = ["technician", "dispatcher", "admin"]
  * role array -- see 03-CONTEXT.md's RBAC decisions.
  */
 export const TICKET_ASSIGN_ROLES: Role[] = ["dispatcher", "admin"];
+
+/**
+ * Single source of truth for which roles may start/stop timers and
+ * create/edit/delete TimeEntry records. Every time-entry Server Action
+ * imports this constant for its requireRole() call instead of hardcoding
+ * its own literal role array -- see 04-CONTEXT.md's RBAC decisions.
+ */
+export const TIME_ENTRY_MANAGE_ROLES: Role[] = ["technician", "dispatcher", "admin"];
+
+/**
+ * Single source of truth for which roles may view, generate, finalize, and
+ * push Invoice records to QuickBooks. Every invoice Server Action imports
+ * this constant for its requireRole() call instead of hardcoding its own
+ * literal role array -- see 04-CONTEXT.md's RBAC decisions.
+ */
+export const INVOICE_MANAGE_ROLES: Role[] = ["finance", "admin"];
+
+/**
+ * Single source of truth for which roles may connect/disconnect the
+ * QuickBooks OAuth connection. Every QBO-connection Server Action imports
+ * this constant for its requireRole() call instead of hardcoding its own
+ * literal role array -- see 04-CONTEXT.md's RBAC decisions.
+ */
+export const QBO_MANAGE_ROLES: Role[] = ["admin"];
 
 /**
  * Centralized authorization check. Fail-secure: any role not present in the

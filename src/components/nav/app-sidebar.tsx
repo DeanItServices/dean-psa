@@ -51,6 +51,16 @@ export function AppSidebar({ role }: { role: Role }) {
             </Link>
           </li>
         )}
+        {can(role, "invoice:view") && (
+          <li>
+            <Link
+              href="/invoices"
+              className="block rounded-md px-2 py-1.5 text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+            >
+              Invoices
+            </Link>
+          </li>
+        )}
         {can(role, "admin:manage_users") && (
           <li>
             {can(role, "qbo:manage") || can(role, "admin:manage_users") ? (

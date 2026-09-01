@@ -32,9 +32,19 @@ import { loginAs, ROLE_CREDENTIALS } from "./fixtures";
  *   drag listeners when `draggable` (ticket:manage) is true. There is no
  *   `data-testid` anywhere in these components, so the spec locates the
  *   destination column via its column header text (`KanbanColumn`'s
- *   `<h2>{label}</h2>`, e.g. "In Progress") and drives the transition with
- *   Playwright's pointer-based drag simulation (`dragTo`), which exercises
- *   `PointerSensor`'s real pointer-event listeners -- not a synthetic
+ *   `<h2>{label}</h2>`, e.g. "In Progress") and drives the transition with a
+ *   manual `page.mouse` pointer sequence (hover, down, several incremental
+ *   moves, up) rather than Playwright's single-jump `locator.dragTo()`.
+ *   `kanban-board.tsx` configures `PointerSensor` with
+ *   `activationConstraint: { distance: 4 }` and `closestCorners` collision
+ *   detection (confirmed by reading the component source) -- `dragTo()`
+ *   issues one mouse-move directly from source to target, which is a
+ *   documented source of flakiness for dnd-kit boards because it may not
+ *   generate enough intermediate pointermove events for the activation
+ *   distance to trip and for closestCorners to resolve to the right
+ *   droppable during the move. Stepping the pointer across several
+ *   intermediate positions exercises `PointerSensor`'s real pointer-event
+ *   listeners the way an actual drag does, rather than a synthetic
  *   Server Action call.
  *
  * CONFIRMED GAP -- no delete UI exists for tickets anywhere in the app.
@@ -133,8 +143,43 @@ test.describe("Ticket lifecycle", () => {
       .locator("div")
       .filter({ has: page.getByRole("heading", { level: 2, name: "In Progress" }) })
       .last();
+    await expect(destinationColumn).toBeVisible();
 
-    await card.dragTo(destinationColumn);
+    // Manual pointer sequence instead of locator.dragTo(): dragTo() issues a
+    // single mouse-move jump straight from source to target, which is a
+    // documented source of flakiness against dnd-kit boards -- it may not
+    // generate enough intermediate pointermove events for PointerSensor's
+    // `activationConstraint: { distance: 4 }` to activate the drag, or for
+    // `closestCorners` collision detection to resolve to the destination
+    // droppable mid-move (both confirmed in kanban-board.tsx). Stepping the
+    // pointer across several intermediate positions mirrors a real drag.
+    const sourceBox = await card.boundingBox();
+    const destinationBox = await destinationColumn.boundingBox();
+    if (!sourceBox || !destinationBox) {
+      throw new Error("Could not resolve bounding box for drag source/destination");
+    }
+
+    const startX = sourceBox.x + sourceBox.width / 2;
+    const startY = sourceBox.y + sourceBox.height / 2;
+    const endX = destinationBox.x + destinationBox.width / 2;
+    const endY = destinationBox.y + Math.min(40, destinationBox.height / 2);
+
+    await card.hover();
+    await page.mouse.move(startX, startY);
+    await page.mouse.down();
+
+    // Several incremental moves: the first must clear the 4px activation
+    // distance, and the rest give closestCorners enough intermediate
+    // pointer positions to track the drag into the destination column
+    // before the final drop.
+    const steps = 5;
+    for (let step = 1; step <= steps; step += 1) {
+      const t = step / steps;
+      await page.mouse.move(startX + (endX - startX) * t, startY + (endY - startY) * t);
+    }
+
+    await page.mouse.move(endX, endY);
+    await page.mouse.up();
 
     // Assert: reload and confirm the status change persisted server-side
     // (updateTicketStatus writes to the DB and revalidates both /tickets

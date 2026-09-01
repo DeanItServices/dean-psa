@@ -43,6 +43,16 @@ const authMiddleware = NextAuth(authConfig).auth;
 // trip the limiter. This is why /api/auth/* (10 req/60s) is tighter than
 // general routes (60 req/60s) but still well above what one legitimate
 // login attempt (or a few concurrent ones from a shared office IP) needs.
+//
+// TRUST BOUNDARY -- see the full warning on getClientIp() below. Short
+// version: this is IP-keyed via X-Forwarded-For/X-Real-IP, which are
+// client-settable headers. Without a reverse proxy in front of this app
+// that overwrites those headers with the real peer address, an
+// unauthenticated attacker can spoof a fresh IP on every request and
+// bypass this limiter entirely -- including the /api/auth/* brute-force
+// protection. This project's docker-compose.yml currently exposes `app`
+// directly with no such proxy, so treat this limiter as a no-op against a
+// deliberate attacker until one is added in front of it.
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const GENERAL_RATE_LIMIT = 60; // requests per window per IP, all other matched routes
 const AUTH_RATE_LIMIT = 10; // requests per window per IP, /api/auth/* (credential-check surface)
@@ -81,6 +91,45 @@ function cleanupStaleEntries(now: number) {
  * directly with no proxy in front, which can happen in local dev), fall back
  * to a fixed key so rate limiting degrades to "one shared bucket" rather
  * than silently turning off -- documented here rather than left implicit.
+ *
+ * !!! TRUST BOUNDARY WARNING -- READ BEFORE RELYING ON THIS FOR SECURITY !!!
+ * `x-forwarded-for` and `x-real-ip` are ordinary, client-settable HTTP
+ * headers. Nothing in this file -- or anywhere else in this codebase --
+ * verifies they were actually set by a trusted reverse proxy rather than by
+ * the requester itself. This project's docker-compose.yml runs the `app`
+ * service with port 3000 published directly to the host and has NO reverse
+ * proxy in front of it. In that topology, any unauthenticated client can
+ * send a different, forged `X-Forwarded-For` value on every single request
+ * and this function will dutifully key the rate limiter on whatever the
+ * attacker claims their IP is -- which completely defeats per-IP tracking,
+ * INCLUDING the /api/auth/* brute-force protection above that this rate
+ * limiter exists to provide.
+ *
+ * This is NOT fixed or mitigated anywhere in code, and cannot be from
+ * inside this file: there is no way for an Edge middleware function to tell
+ * "this header was set by my reverse proxy" apart from "this header was set
+ * by the client" once both arrive as the same HTTP header on the same
+ * socket. That distinction can only be enforced by something in front of
+ * this app that strips/overwrites client-supplied X-Forwarded-For/
+ * X-Real-IP and re-sets them from the real peer address (nginx, Caddy,
+ * Traefik, a cloud load balancer, etc.).
+ *
+ * Bottom line:
+ *   - Deployed with a reverse proxy that overwrites these headers: this
+ *     rate limiter is a meaningful brute-force deterrent, as designed.
+ *   - Deployed as this repo's docker-compose.yml ships it today (app
+ *     exposed directly, no proxy): getClientIp() returns an
+ *     attacker-controlled value on every request. IP-based rate limiting
+ *     (including /api/auth/*) provides NO protection against a direct,
+ *     header-spoofing attacker in this configuration.
+ *   - The one topology where the current docker-compose.yml setup is still
+ *     fine as-is is a genuinely trusted, internal-only network where the
+ *     client population has no incentive/ability to spoof headers (e.g. a
+ *     private LAN with no exposure to the internet) -- not the general
+ *     self-hosted-on-the-internet case this app otherwise targets.
+ * Do not treat this comment as resolved by a future code change to this
+ * function; the fix is infrastructure (add a reverse proxy that owns these
+ * headers), not application code.
  */
 function getClientIp(request: NextRequest): string {
   const forwardedFor = request.headers.get("x-forwarded-for");

@@ -25,7 +25,7 @@ The `email-poller` service exposes no ports (it is an outbound-only polling proc
 
 **Only port 3000 should ever be internet-reachable, and only if the MSP has a specific reason to expose this application outside its internal network.** Before doing so, be aware of the following, introduced in this phase:
 
-- **Rate limiting exists but is basic.** `src/middleware.ts` applies an in-memory, IP-keyed fixed-window rate limiter: 60 requests/60s per IP for general routes, and a tighter 10 requests/60s per IP for `/api/auth/*` (the login/credential-check surface). This is a brute-force speed bump appropriate for a small internal tool, **not a production-grade or distributed rate limiter** — it is per-process, resets on container restart, and provides no protection if the app is scaled to multiple instances behind a load balancer (each instance would track its own independent counters, effectively multiplying the real limit by instance count). If this app is ever exposed to the public internet, put it behind a reverse proxy (e.g. Caddy, nginx, or a cloud provider's WAF) with its own independent rate limiting/DDoS protection rather than relying on this limiter alone.
+- **Rate limiting exists but is basic.** `src/middleware.ts` applies an in-memory, IP-keyed fixed-window rate limiter: 60 requests/60s per IP for general routes, and a tighter 10 requests/60s per IP for `/api/auth/*` (the login/credential-check surface). This is a brute-force speed bump appropriate for a small internal tool, **not a production-grade or distributed rate limiter** — it is per-process, resets on container restart, and provides no protection if the app is scaled to multiple instances behind a load balancer (each instance would track its own independent counters, effectively multiplying the real limit by instance count). If this app is ever exposed to the public internet, put it behind a reverse proxy (e.g. Caddy, nginx, or a cloud provider's WAF) with its own independent rate limiting/DDoS protection rather than relying on this limiter alone. Note also that the limiter keys on the client IP it reads from request headers (`X-Forwarded-For`/`X-Real-IP`) — it only provides real protection when the app sits behind a reverse proxy that sets those headers itself and strips/overwrites any client-supplied values; without a trusted proxy in front, a client can forge those headers and bypass the per-IP limit entirely.
 - For an internal-network-only deployment (the default assumption for this app, an "in-house PSA platform"), the built-in limiter is a reasonable defense-in-depth layer against a compromised internal host or a misbehaving script, not the primary control.
 
 ---
@@ -108,6 +108,14 @@ prisma migrate deploy && bash scripts/post-migrate.sh
 2. `scripts/post-migrate.sh` then idempotently (`CREATE UNIQUE INDEX IF NOT EXISTS`) re-applies the one-active-timer-per-user partial index on `TimeEntry`, which Prisma's schema DSL cannot express directly and which `prisma migrate deploy` alone does not guarantee on a fresh environment (see the script's own header comment for the full history). It is safe to run repeatedly.
 
 Run this command from the host (not inside a container) with `DATABASE_URL` in your shell environment pointing at the published `db` port (i.e. matching `.env`'s `DATABASE_URL`/`DB_PORT`), or `exec` into the `app` container and run it there against the Docker-internal `db:5432` address. Either way, run it once after `docker compose up -d` and again after pulling any future update that adds new migrations.
+
+> **Warning — this phase's migration can fail on a non-empty database.** `20260901190000_add_defense_in_depth_indexes` adds a unique constraint on `Invoice.qboInvoiceId`. Multiple `NULL` values are fine (most invoices haven't been pushed to QBO yet), but if the target database already has two or more `Invoice` rows sharing the same non-null `qboInvoiceId`, Postgres will reject the migration with `duplicate key value violates unique constraint`. This matters any time you're migrating a database that isn't brand-new — upgrading an existing pre-Phase-6 deployment, or re-running against a used staging DB. Before running `npm run db:migrate:deploy` against such a database, check for duplicates first:
+>
+> ```sql
+> SELECT "qboInvoiceId", COUNT(*) FROM "Invoice" WHERE "qboInvoiceId" IS NOT NULL GROUP BY "qboInvoiceId" HAVING COUNT(*) > 1;
+> ```
+>
+> If this returns any rows, the migration will fail until those duplicates are resolved — that's a data decision for the operator/admin (which row is authoritative), not something to fix blindly in code.
 
 ---
 

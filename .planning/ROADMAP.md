@@ -6,7 +6,7 @@
 - [x] Phase 2: CRM Core (5 plans)
 - [x] Phase 3: Ticketing & Service Desk (4 plans)
 - [x] Phase 4: Time Tracking & Billing (6 plans) — Complete
-- [ ] Phase 5: Reporting & Dashboards (3 plans)
+- [ ] Phase 5: Reporting & Dashboards (4 plans) — Planned
 - [ ] Phase 6: Polish & Launch Prep (2 plans)
 
 ## Phase Details
@@ -61,13 +61,13 @@
 ### Phase 5: Reporting & Dashboards
 **Goal**: Give managers and leadership visibility into technician workload, SLA health, and client profitability using data already captured by ticketing and billing.
 **Requirements**: Technician utilization/workload reporting; SLA compliance reporting; Client profitability reporting
-**Recommended Agents**: data-analytics-engineer, engineering-frontend-developer, engineering-backend-architect
+**Recommended Agents**: engineering-backend-architect, engineering-frontend-developer, testing-qa-verification-specialist
 **Success Criteria**:
 - [ ] Dashboard shows technician utilization (time logged vs. capacity) over a selectable date range
 - [ ] SLA compliance report shows % of tickets meeting response/resolution targets, filterable by client/contract
 - [ ] Client profitability view compares billed revenue against time invested per client
 - [ ] Dashboards respect role permissions (e.g. finance/leadership see profitability; technicians see their own utilization)
-**Plans**: 3
+**Plans**: 4
 
 ### Phase 6: Polish & Launch Prep
 **Goal**: Harden the application for real daily use — performance, UX consistency, and self-hosted deployment readiness.
@@ -89,5 +89,5 @@
 | Phase 2: CRM Core | 5 | 5 | Complete |
 | Phase 3: Ticketing & Service Desk | 4 | 4 | Complete |
 | Phase 4: Time Tracking & Billing | 6 | 6 | Complete |
-| Phase 5: Reporting & Dashboards | 3 | 0 | Not started |
+| Phase 5: Reporting & Dashboards | 4 | 0 | Planned |
 | Phase 6: Polish & Launch Prep | 2 | 0 | Not started |

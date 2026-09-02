@@ -1,22 +1,28 @@
 # Project State
 
 ## Current Position
-- **Phase**: 6 of 6 (complete)
-- **Status**: Phase 6 complete -- review passed (2 cycles)
-- **Last Activity**: Phase 6 review passed (2026-09-01)
-- **Next Action**: All phases complete -- project review finished! Consider running the real Playwright E2E suite (`npx playwright install --with-deps chromium && npm run test:e2e`) and addressing the no-signup-UI gap before production launch.
+- **Phase**: 7 of 9 (planned)
+- **Status**: Phase 7 planned -- 7 plans across 4 waves
+- **Last Activity**: Phase 7 planning (2026-09-02)
+- **Next Action**: Run `/legion:build` to execute Phase 7: Account Management & Session Freshness
 
 ## Progress
 ```
-[####################] 100% — 32/32 plans complete
+[##############......] 72% — 32/44 plans complete
 ```
 
 ## GitHub
 - Phase 4 issue: https://github.com/DeanItServices/dean-psa/issues/1
 - Phase 5 issue: https://github.com/DeanItServices/dean-psa/issues/5
 - Phase 6 issue: https://github.com/DeanItServices/dean-psa/issues/8
+- Phase 7 issue: https://github.com/DeanItServices/dean-psa/issues/19
 
 ## Recent Decisions
+- **Launch Readiness milestone opened (2026-09-02)**: Phases 7-9 added to the roadmap from `.planning/explorations/2026-09-02-launch-readiness-design.md`. Roadmap went 6 phases/32 plans -> 9 phases/44 plans.
+- **Codebase map generated (2026-09-02)**: `.planning/CODEBASE.md` plus `.planning/codebase/` (69 chunks, 160 symbols) and `.planning/config/directory-mappings.yaml`, analyzed at commit f2e1113 over 120 source files.
+- **Phase 7 planned as 7 plans / 4 waves**, after two rounds of plan critique. Round 1 returned REWORK (5 CRITICAL) and forced a restructure from 5 plans/3 waves; round 2 returned NEEDS WORK and drove in-place fixes. Architecture proposals and the spec pipeline were both skipped by user choice -- the exploration had already compared four approaches and recorded the rejections.
+- **Phase 7 findings worth carrying forward**: (1) the migration MUST land before the app restarts -- `authorize()` does `findUnique` with no `select`, so code landing first raises P2022 on every request and `loginAction` reports "Invalid email or password" to every user including every admin; (2) `/api/qbo/connect` cannot use `requireRole()` (documented at `route.ts:9-27`) so it needs its own `mustChangePassword` check; (3) a bare `db.$transaction` does not serialize the last-active-admin invariant -- Prisma defaults to READ COMMITTED; (4) onboarding must not be performed until Phase 8 delivers TLS.
+- **Correction to the codebase map**: `CODEBASE.md` and the `cmp-001`/`rt-006` index chunks originally described a sidebar "Admin section with a QuickBooks link" that does not exist -- `app-sidebar.tsx:74-98` is one `<li>` with a ternary rendering a single link labelled "Admin", plus a dead else-branch. Corrected on the Phase 7 planning branch.
 - Tech stack: Next.js + TypeScript + PostgreSQL + Docker, self-hosted
 - Execution mode: Guided
 - Planning depth: Deep Analysis (6 phases)

@@ -1,10 +1,10 @@
 # Project State
 
 ## Current Position
-- **Phase**: 7 of 9 (executed, pending review)
-- **Status**: Phase 7 complete -- all 7 plans executed successfully
-- **Last Activity**: Phase 7 execution (2026-09-02)
-- **Next Action**: Run `/legion:review` to verify Phase 7: Account Management & Session Freshness
+- **Phase**: 7 of 9 (complete)
+- **Status**: Phase 7 complete -- review passed (3 cycles + 1 fix pass)
+- **Last Activity**: Phase 7 review passed (2026-09-02)
+- **Next Action**: Run `/legion:plan 8` to plan Phase 8: Deployment Hardening
 
 ## Progress
 ```
@@ -18,6 +18,11 @@
 - Phase 7 issue: https://github.com/DeanItServices/dean-psa/issues/19
 
 ## Recent Decisions
+- **Phase 7 review PASSED (2026-09-02)** after 3 cycles plus an authorised fix pass. 12 blockers found and resolved. Full detail in `.planning/phases/07-account-management-session-freshness/07-REVIEW.md`.
+- **The review's central finding was about evidence, not code.** Four of the eleven success criteria had been marked complete on evidence that was tautological, proved a different mechanism, or graded a stale build. Criteria 5, 9 and 11 are now PROVEN BY TEST; criterion 8's fake proof was deleted rather than reworded; criterion 7 went from ASSERTED ONLY to PROVEN BY TEST for its write path.
+- **Two real security defects were found in shipped code**, neither caught by the two plan-critique rounds or the build's own integration gate: a password reset did not revoke sessions (so an attacker riding a stolen session survived it and could take the account permanently, while the UI promised otherwise), and `/login` — the only path anyone authenticates through — had no rate limiting at all, because login is a Server Action posting to `/login` rather than `/api/auth/*`. A third, a plaintext password leaking into the URL on a pre-hydration form submit, was found while fixing the first two.
+- **A correction on the record**: the rate limiter's shared-bucket hazard was reported as a confirmed denial of service on the strength of a measurement that was invalid (attacker and victim were the same host, so they legitimately shared a bucket). Re-measured; the hazard is latent and unverified for the Compose topology. The defensive fix was kept, but its code comment says so.
+- **Test count 19 -> 45**, `npm run test:e2e` exit 0. The command the runbook names had been permanently red because Playwright's exit code is per-process and the advisory Phase 9 specs were bundled into it.
 - **Phase 7 executed (2026-09-02)**: all 7 plans passed across 4 waves. Waves 2 and 3 ran in parallel on verified-disjoint file sets. Every plan's changes were independently re-verified by the orchestrator (`tsc --noEmit`, `lint`, targeted greps) rather than accepted on the agent's report.
 - **Phase 7 evidence**: `e2e/user-lifecycle.spec.ts` -- 13 tests, passing, re-run independently. It proves deactivation and role changes take effect on the next request without re-login (verified by decoding the live session cookie, which still carries the OLD role), and that the self-target refusals are enforced server-side rather than only disabled in the UI (verified by invoking the handler off React's fiber props, since removing the DOM `disabled` attribute is not sufficient).
 - **CARRIED TO PHASE 8 (serious)**: `getClientIp()` falls back to the literal key `"unknown"` when no `X-Forwarded-For`/`X-Real-IP` is present, and `docker-compose.yml` ships no reverse proxy -- so **every user in the deployment shares one 60-request-per-minute budget**. Measured: requests 61-75 to `/unauthorized` returned 429, surfacing to the user as "Something went wrong. Please try again." The app is unusable for a real team until Phase 8's Caddy work lands.

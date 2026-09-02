@@ -152,8 +152,8 @@ including `pushInvoiceToQbo`), and full CRUD in each CRM module.
    *and* both `app` and `email-poller` `DATABASE_URL`s, with `${DB_PORT:-5432}` published
    to the host.
 4. **No user-management UI.** Zero `user.create` call sites outside `prisma/seed.ts`. The
-   `admin:manage_users` permission exists (`permissions.ts:10`) and already gates the
-   sidebar Admin section, but nothing hangs off it besides `/admin/quickbooks`.
+   `admin:manage_users` permission exists (`permissions.ts:10`) and already gates a sidebar
+   entry, but that entry is a single link labelled "Admin" pointing at `/admin/quickbooks`.
 5. **Ticket delete destroys billing records** (see Data Model). `deleteTicket`
    (`tickets.ts:237`) also has zero call sites in `src/`.
 6. **`ItemRef` hardcoded** to `{ value: "1" }` in `invoices.ts:367` — every QBO invoice

@@ -8,7 +8,7 @@
 - [x] Phase 4: Time Tracking & Billing (6 plans) — Complete
 - [x] Phase 5: Reporting & Dashboards (4 plans) — Complete
 - [x] Phase 6: Polish & Launch Prep (9 plans) — Complete
-- [ ] Phase 7: Account Management & Session Freshness (5 plans)
+- [ ] Phase 7: Account Management & Session Freshness (7 plans)
 - [ ] Phase 8: Deployment Hardening (4 plans)
 - [ ] Phase 9: Verification & Debt Closure (3 plans)
 
@@ -103,7 +103,7 @@ verified line references behind each success criterion.*
 - [ ] Guard rails hold: an admin cannot deactivate or demote themselves, and at least one active admin always remains
 - [ ] `/change-password` lives at `(auth)/change-password` (outside the `(dashboard)` gate that redirects to it) and clears `mustChangePassword` on success
 - [ ] `npm run bootstrap:admin` creates the first real admin, retiring `ALLOW_SEED_IN_PRODUCTION` as the documented path
-**Plans**: 5
+**Plans**: 7
 
 ### Phase 8: Deployment Hardening
 **Goal**: Make the self-hosted deployment safe to expose — real TLS, a reverse proxy that makes the existing rate limiter meaningful, and no default credentials.
@@ -140,6 +140,6 @@ verified line references behind each success criterion.*
 | Phase 4: Time Tracking & Billing | 6 | 6 | Complete |
 | Phase 5: Reporting & Dashboards | 4 | 4 | Complete |
 | Phase 6: Polish & Launch Prep | 9 | 9 | Complete |
-| Phase 7: Account Management & Session Freshness | 5 | 0 | Pending |
+| Phase 7: Account Management & Session Freshness | 7 | 0 | Pending |
 | Phase 8: Deployment Hardening | 4 | 0 | Pending |
 | Phase 9: Verification & Debt Closure | 3 | 0 | Pending |

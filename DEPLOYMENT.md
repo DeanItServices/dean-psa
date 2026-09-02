@@ -9,6 +9,14 @@ Every command below matches a real script in `package.json`, a real Docker Compo
 ## Prerequisites
 
 - **Docker** and **Docker Compose** (the `docker compose` plugin, v2 syntax — not the legacy standalone `docker-compose` binary) installed on the target host.
+- **Node.js 20.19+** (matching this project's pinned `node:20.20` in `Dockerfile`; 22.12+ or 24+ also work) installed on the host itself — required for the host-side tooling described in "Database migration" below (`npm install`, `npm run db:migrate:deploy`, `npm run test:e2e`). This is separate from the Node.js version used *inside* the Docker images, which is pinned by `Dockerfile` and doesn't depend on the host. Prisma 7 refuses to install on an older Node with a clear `Prisma only supports Node.js versions 20.19+, 22.12+, 24.0+` error — check with `node --version` first. On a fresh Debian/Ubuntu host (a common case: the OS-default `apt` package is often too old), install a current Node.js via NodeSource:
+
+  ```bash
+  curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
+  sudo apt install -y nodejs
+  ```
+
+  For other distros/OSes, use [nvm](https://github.com/nvm-sh/nvm) or the official installer from [nodejs.org](https://nodejs.org).
 - Git access to clone this repository.
 - Outbound network access from the host to:
   - Microsoft Graph API (`login.microsoftonline.com`, `graph.microsoft.com`) if the email-to-ticket poller will be used.

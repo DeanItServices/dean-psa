@@ -27,6 +27,7 @@ const findSessionUser = cache(async (id: string) => {
       role: true,
       isActive: true,
       mustChangePassword: true,
+      tokenVersion: true,
     },
   });
 });
@@ -45,14 +46,36 @@ const findSessionUser = cache(async (id: string) => {
  * A user row that is missing (deleted) or has isActive=false resolves to
  * null, i.e. is treated as unauthenticated by every caller.
  *
+ * PASSWORD-CHANGE REVOCATION (`tokenVersion`). Re-reading role/isActive/
+ * mustChangePassword is NOT sufficient on its own, because none of those
+ * change when a password is rotated. Without the check below, `resetUserPassword`
+ * would have no effect whatsoever on an already-issued JWT: an attacker riding
+ * a stolen session would survive the reset and could then walk to
+ * /change-password and set a password of their own, converting a stolen
+ * session into a permanent account takeover -- while the admin UI told the
+ * victim the old password had stopped working.
+ *
+ * So every JWT carries the `tokenVersion` that was current when it was minted
+ * (src/auth.ts's authorize + jwt callback), and every request compares it
+ * against the live column. Any write that increments the column invalidates
+ * every token issued before it.
+ *
+ * A token with NO tokenVersion claim -- one minted by a build that predates
+ * this mechanism -- is refused, deliberately. It cannot be distinguished from
+ * a token whose generation is unknown, so it is treated as revoked. The
+ * one-time cost is that everyone signed in across the deploy of this change
+ * has to log in again; the alternative (treating "absent" as "matches 0")
+ * would leave exactly the pre-existing tokens this mechanism exists to revoke
+ * silently accepted.
+ *
  * FAIL CLOSED: if the lookup throws it is deliberately NOT caught. We never
  * fall back to the JWT's `role` claim -- that would restore the staleness bug
  * at exactly the moment the database cannot contradict it. Letting the throw
  * propagate is fail-closed (no user object is ever produced, so nothing
  * downstream grants access) and it is legible: a database outage, or a P2022
- * raised because the isActive/mustChangePassword migration has not been
- * applied to this environment, surfaces as an error instead of masquerading
- * as every user being silently logged out.
+ * raised because the isActive/mustChangePassword/tokenVersion migration has
+ * not been applied to this environment, surfaces as an error instead of
+ * masquerading as every user being silently logged out.
  *
  * This performs a Prisma query and calls the full auth() instance, so this
  * module is strictly Node-runtime: use it from Server Components, Server
@@ -67,10 +90,54 @@ export async function getCurrentUser() {
     return null;
   }
 
+  const tokenVersion = session?.user?.tokenVersion;
+
   const user = await findSessionUser(id);
 
   if (!user || !user.isActive) {
     return null;
+  }
+
+  // Revocation check. `!==` on a number, and a token that carries no claim at
+  // all (typeof !== "number") is refused rather than defaulted -- see the
+  // tokenVersion paragraph above.
+  if (typeof tokenVersion !== "number" || tokenVersion !== user.tokenVersion) {
+    return null;
+  }
+
+  return user;
+}
+
+/**
+ * Session gate for a page that has NO role restriction of its own.
+ *
+ * WHY THIS EXISTS SEPARATELY FROM THE (dashboard) LAYOUT. The layout performs
+ * the same two redirects, but Next.js does not re-render a shared layout on a
+ * soft (client-side) navigation between two routes in the same group. A user
+ * whose `mustChangePassword` was set -- or who was deactivated -- while
+ * already browsing therefore keeps navigating the whole dashboard, because
+ * the only code that would have bounced them never runs again. The gate has
+ * to live in the leaf that renders on every navigation.
+ *
+ * Use this wherever a page previously open-coded
+ * `getCurrentUser()` + `if (!user) redirect("/login")`. Pages with a role or
+ * permission requirement should use requireRole() (or keep their own `can()`
+ * check AFTER this call, for the permission sets requireRole's role list
+ * cannot express).
+ *
+ * Returns a non-null user, so the caller needs no null handling.
+ */
+export async function requireActiveUser() {
+  const user = await getCurrentUser();
+
+  if (!user) {
+    redirect("/login");
+  }
+
+  // Same flag, same target as requireRole(). A temp-password holder must not
+  // be able to read dashboard data either, not just to invoke actions.
+  if (user.mustChangePassword) {
+    redirect("/change-password");
   }
 
   return user;

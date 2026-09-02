@@ -522,6 +522,12 @@ async function runReset(
       // recovering an account mid-outage should land on the dashboard, not be
       // bounced straight into /change-password.
       mustChangePassword: false,
+      // Break-glass recovery is used precisely when an account may be
+      // compromised, so it must evict every session already issued for it --
+      // rotating the hash alone does not, because a JWT is self-contained.
+      // getCurrentUser() refuses any token whose stamped tokenVersion differs
+      // from this column. Same increment resetUserPassword performs.
+      tokenVersion: { increment: 1 },
     },
   });
 

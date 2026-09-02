@@ -1,5 +1,4 @@
-import { redirect } from "next/navigation";
-import { getCurrentUser } from "@/lib/session";
+import { requireActiveUser } from "@/lib/session";
 import { AppSidebar } from "@/components/nav/app-sidebar";
 import { UserMenu } from "@/components/nav/user-menu";
 
@@ -7,33 +6,31 @@ import { UserMenu } from "@/components/nav/user-menu";
  * Authenticated application shell. Wraps every route in the (dashboard)
  * route group with a role-aware sidebar and a user menu.
  *
- * getCurrentUser() here is a defense-in-depth check alongside middleware
+ * requireActiveUser() here is a defense-in-depth check alongside middleware
  * (Plan 01-03): middleware only verifies a session cookie is present at the
  * Edge, this Server Component performs the authoritative Node-side check
  * and redirects to /login if there is no session. It also resolves the user
- * from the database, so a deactivated or deleted account lands here as null.
+ * from the database, so a deactivated or deleted account is bounced here.
  *
- * The /change-password redirect below is UX, NOT the security boundary --
- * requireRole() in @/lib/session enforces the same flag for every Server
- * Action, which is what actually stops a temp-password holder from acting.
- * It cannot loop: /change-password lives in the (auth) route group, whose
- * layout (src/app/(auth)/layout.tsx) is a plain centered-card wrapper with
- * no session check, so it never re-enters this layout.
+ * It is NOT sufficient on its own, which is why every page in this group now
+ * calls requireActiveUser() as well: Next.js does not re-render a shared
+ * layout on a soft (client-side) navigation, so this code does not run again
+ * when a user moves between dashboard routes. Someone flagged or deactivated
+ * mid-session would keep browsing until a hard reload.
+ *
+ * The /change-password redirect is also enforced by requireRole() in
+ * @/lib/session for every Server Action, which is what stops a temp-password
+ * holder from ACTING as opposed to reading. It cannot loop: /change-password
+ * lives in the (auth) route group, whose layout (src/app/(auth)/layout.tsx) is
+ * a plain centered-card wrapper with no session check, so it never re-enters
+ * this layout.
  */
 export default async function DashboardLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const user = await getCurrentUser();
-
-  if (!user) {
-    redirect("/login");
-  }
-
-  if (user.mustChangePassword) {
-    redirect("/change-password");
-  }
+  const user = await requireActiveUser();
 
   return (
     <div className="flex min-h-screen">

@@ -41,6 +41,18 @@ function roleLabel(role: string) {
   return role.charAt(0).toUpperCase() + role.slice(1);
 }
 
+/** See the identical note in user-create-form.tsx: the async Clipboard API is
+ * undefined outside a secure context and this app is plaintext HTTP until
+ * Phase 8, so the Copy button is not rendered at all when it could only fail.
+ * Read during render, but only from inside the issued panel, which never
+ * exists on the server -- no hydration mismatch. */
+function clipboardAvailable() {
+  return (
+    typeof navigator !== "undefined" &&
+    typeof navigator.clipboard?.writeText === "function"
+  );
+}
+
 /**
  * Per-row lifecycle controls: change role, reset password, deactivate,
  * reactivate. Follows push-to-qbo-button.tsx's action-button convention
@@ -49,11 +61,21 @@ function roleLabel(role: string) {
  * redirect still propagates.
  *
  * THIS COMPONENT CONTAINS NO AUTHORIZATION LOGIC AND NO DATABASE WRITE.
- * `isSelf` disables the three controls that 07-03 refuses on a self-target,
+ * `isSelf` blocks the three controls that 07-03 refuses on a self-target,
  * which is UX only -- the server refusal is the guarantee, and if one of those
  * refusals does come back it is rendered verbatim rather than swallowed. Every
  * { error } return, including the last-active-admin guard rail, lands in the
  * alert below.
+ *
+ * BLOCKED, NOT `disabled`. Every one of these controls used to carry
+ * `disabled={isSelf || isPending}`, which has two costs a keyboard or
+ * screen-reader user pays: activating a control disabled the element that had
+ * focus, dropping focus to <body> mid-flow, and a `disabled` control is out of
+ * the tab order entirely -- so the self-target explanation below was text
+ * nobody arriving by keyboard would ever reach. They stay focusable, carry
+ * aria-disabled, are described by the reason they are blocked, and every
+ * handler returns early. The dialogs are controlled for the same reason: the
+ * trigger has to stay pressable-looking without opening.
  *
  * Destructive confirmation uses the styled ui/alert-dialog wrapper, never the
  * browser's built-in confirm() dialog: that one is unstyled, unthemed, and
@@ -85,6 +107,29 @@ export function UserRowActions({
   const [copyState, setCopyState] = React.useState<"idle" | "copied" | "failed">("idle");
   const [isPending, startTransition] = React.useTransition();
 
+  // Summary text for the always-mounted live region. It deliberately does NOT
+  // contain the credential: role="status" implies aria-atomic="true", so the
+  // whole region is read out, and a 20-character secret read aloud in a shared
+  // office is not an improvement. Focus is moved into the panel instead, where
+  // the value is read only if the user goes to it.
+  const [announcement, setAnnouncement] = React.useState("");
+  const panelRef = React.useRef<HTMLDivElement>(null);
+
+  // Radix restores focus to the trigger when a dialog closes; the panel then
+  // takes it when the action resolves. Without this the credential lands below
+  // a control the admin is not looking at, unannounced.
+  React.useEffect(() => {
+    if (issued) {
+      panelRef.current?.focus();
+    }
+  }, [issued]);
+
+  // Open state is controlled so a blocked trigger can stay focusable without
+  // opening its dialog. Same for the role menu.
+  const [roleMenuOpen, setRoleMenuOpen] = React.useState(false);
+  const [resetOpen, setResetOpen] = React.useState(false);
+  const [deactivateOpen, setDeactivateOpen] = React.useState(false);
+
   // No effect syncs `selectedRole` back to the `role` prop, deliberately.
   // After a successful change the action's revalidatePath re-renders this row
   // with the role the admin just picked, so the two already agree; after a
@@ -94,19 +139,50 @@ export function UserRowActions({
   // admin re-roles this user while a selection sits unsubmitted -- and the
   // next submit is validated server-side against the real row regardless.
 
+  const roleSelectId = `role-${userId}`;
+  const selfReasonId = `self-reason-${userId}`;
+  const errorId = `row-error-${userId}`;
+  const panelHeadingId = `temp-password-heading-${userId}`;
+
+  const roleUnchanged = selectedRole === role;
+  const roleMenuBlocked = isSelf || isPending;
+  const changeRoleBlocked = isSelf || isPending || roleUnchanged;
+  const resetBlocked = isSelf || isPending;
+  const deactivateBlocked = isSelf || isPending;
+  const reactivateBlocked = isPending;
+
+  /** Reasons a control is blocked, in the order they should be read. Both are
+   * real elements in this row, so they work as aria-describedby targets. */
+  const describedBy =
+    [isSelf ? selfReasonId : null, error ? errorId : null]
+      .filter(Boolean)
+      .join(" ") || undefined;
+
+  /** Visual stand-in for :disabled, which no longer applies. Pointer events
+   * stay on so a mouse user gets the cursor feedback and a click still lands
+   * on a control whose handler refuses it. */
+  const blockedClass = "aria-disabled:cursor-not-allowed aria-disabled:opacity-50";
+
   function handleRoleChange() {
+    if (changeRoleBlocked) {
+      return;
+    }
     setError(null);
     startTransition(async () => {
       try {
         const formData = new FormData();
         formData.set("role", selectedRole);
         const result = await updateUserRole(userId, formData);
-        // Truthiness on `result.error`, matching push-to-qbo-button.tsx.
-        // `"error" in result` does NOT work: TypeScript normalizes these
-        // actions' multi-return unions so every member declares `error`, as
-        // `string` or as optional `undefined`. Nothing but the message is
-        // needed from a role change, so the union itself is left unnarrowed.
-        if (result.error) {
+        // `"error" in result` FOLLOWED BY a truthiness check, and both halves
+        // are load-bearing. Depending on how the action's returns infer,
+        // TypeScript either produces a real discriminated union (where the
+        // success member has no `error` key at all, so the property access
+        // alone is a compile error) or normalizes every member to declare
+        // `error?: undefined` (where `in` does not narrow and the truthiness
+        // check is what does the work). This form compiles and behaves
+        // correctly under both, so a change to the action's return shape
+        // cannot silently turn this branch into dead code.
+        if ("error" in result && result.error) {
           setError(result.error);
           setSelectedRole(role);
         }
@@ -121,8 +197,12 @@ export function UserRowActions({
   }
 
   function handleResetPassword() {
+    if (resetBlocked) {
+      return;
+    }
     setError(null);
     setIssued(null);
+    setAnnouncement("");
     setCopyState("idle");
     startTransition(async () => {
       try {
@@ -135,6 +215,9 @@ export function UserRowActions({
           return;
         }
         setIssued(result.tempPassword);
+        setAnnouncement(
+          `Temporary password issued for ${userEmail}. Focus has moved to the panel showing it. It is shown only once.`
+        );
       } catch (err) {
         if (isNextRedirectError(err)) {
           throw err;
@@ -145,11 +228,15 @@ export function UserRowActions({
   }
 
   function handleDeactivate() {
+    if (deactivateBlocked) {
+      return;
+    }
     setError(null);
     startTransition(async () => {
       try {
         const result = await deactivateUser(userId);
-        if (result.error) {
+        // Same both-shapes-safe narrowing as handleRoleChange above.
+        if ("error" in result && result.error) {
           setError(result.error);
         }
       } catch (err) {
@@ -162,11 +249,15 @@ export function UserRowActions({
   }
 
   function handleReactivate() {
+    if (reactivateBlocked) {
+      return;
+    }
     setError(null);
     startTransition(async () => {
       try {
         const result = await reactivateUser(userId);
-        if (result.error) {
+        // Same both-shapes-safe narrowing as handleRoleChange above.
+        if ("error" in result && result.error) {
           setError(result.error);
         }
       } catch (err) {
@@ -179,9 +270,10 @@ export function UserRowActions({
   }
 
   async function handleCopy(value: string) {
-    // navigator.clipboard is undefined outside a secure context, and this app
-    // runs over plaintext HTTP until Phase 8 delivers TLS. Say so rather than
-    // looking like a dead button; the value is selectable text either way.
+    // The Copy button is only rendered when clipboardAvailable() says the API
+    // exists, so this guard now covers the remaining runtime failures -- a
+    // denied permission, an unfocused document. Say so rather than looking
+    // like a dead button; the value is selectable text either way.
     try {
       if (!navigator.clipboard) {
         throw new Error("Clipboard API unavailable");
@@ -193,10 +285,30 @@ export function UserRowActions({
     }
   }
 
-  const roleSelectId = `role-${userId}`;
-
   return (
-    <div className="flex flex-col items-end gap-2">
+    // whitespace-normal undoes TableCell's whitespace-nowrap for this cell's
+    // contents. Without it every block of prose below -- the self-target
+    // explanation, the error, the "will not be shown again" warning -- renders
+    // as a single unwrapped line and stretches the table to thousands of
+    // pixels inside its overflow-x-auto container. max-w-md constrains the
+    // box, not the text, and break-all cannot override white-space: nowrap.
+    // Button labels keep their own whitespace-nowrap from buttonVariants.
+    <div className="flex flex-col items-end gap-2 whitespace-normal">
+      {/*
+        Mounted UNCONDITIONALLY and empty until there is something to say: a
+        live region must already be in the accessibility tree before its
+        content changes, or the change is treated as new content and not
+        announced. This is the whole reason the reset flow was silent.
+      */}
+      <div
+        role="status"
+        aria-live="polite"
+        data-testid="temp-password-announcement"
+        className="sr-only"
+      >
+        {announcement}
+      </div>
+
       <div className="flex flex-wrap items-center justify-end gap-2">
         <Label htmlFor={roleSelectId} className="sr-only">
           Role for {userEmail}
@@ -204,9 +316,21 @@ export function UserRowActions({
         <Select
           value={selectedRole}
           onValueChange={setSelectedRole}
-          disabled={isSelf || isPending}
+          open={roleMenuOpen}
+          onOpenChange={(next) => {
+            if (next && roleMenuBlocked) {
+              return;
+            }
+            setRoleMenuOpen(next);
+          }}
         >
-          <SelectTrigger id={roleSelectId} size="sm" className="w-36">
+          <SelectTrigger
+            id={roleSelectId}
+            size="sm"
+            className={`w-36 ${blockedClass}`}
+            aria-disabled={roleMenuBlocked || undefined}
+            aria-describedby={describedBy}
+          >
             <SelectValue placeholder="Select a role" />
           </SelectTrigger>
           <SelectContent>
@@ -218,19 +342,44 @@ export function UserRowActions({
           </SelectContent>
         </Select>
 
+        {/* Every control below is named with the account it acts on. The row
+            itself is announced from the Name cell (a <th scope="row">), but
+            only in table-reading mode -- a user tabbing through the page hears
+            the button and nothing else, and four rows of "Reset password" are
+            indistinguishable. Reactivate especially: it has no confirmation
+            dialog to name the target and fires immediately. */}
         <Button
           type="button"
           size="sm"
           variant="secondary"
+          className={blockedClass}
           onClick={handleRoleChange}
-          disabled={isSelf || isPending || selectedRole === role}
+          aria-disabled={changeRoleBlocked || undefined}
+          aria-describedby={describedBy}
+          aria-label={`Change role for ${userEmail}`}
         >
           Change role
         </Button>
 
-        <AlertDialog>
+        <AlertDialog
+          open={resetOpen}
+          onOpenChange={(next) => {
+            if (next && resetBlocked) {
+              return;
+            }
+            setResetOpen(next);
+          }}
+        >
           <AlertDialogTrigger asChild>
-            <Button type="button" size="sm" variant="outline" disabled={isSelf || isPending}>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className={blockedClass}
+              aria-disabled={resetBlocked || undefined}
+              aria-describedby={describedBy}
+              aria-label={`Reset password for ${userEmail}`}
+            >
               Reset password
             </Button>
           </AlertDialogTrigger>
@@ -253,13 +402,24 @@ export function UserRowActions({
         </AlertDialog>
 
         {isActive ? (
-          <AlertDialog>
+          <AlertDialog
+            open={deactivateOpen}
+            onOpenChange={(next) => {
+              if (next && deactivateBlocked) {
+                return;
+              }
+              setDeactivateOpen(next);
+            }}
+          >
             <AlertDialogTrigger asChild>
               <Button
                 type="button"
                 size="sm"
                 variant="destructive"
-                disabled={isSelf || isPending}
+                className={blockedClass}
+                aria-disabled={deactivateBlocked || undefined}
+                aria-describedby={describedBy}
+                aria-label={`Deactivate ${userEmail}`}
               >
                 Deactivate
               </Button>
@@ -290,8 +450,11 @@ export function UserRowActions({
             type="button"
             size="sm"
             variant="secondary"
+            className={blockedClass}
             onClick={handleReactivate}
-            disabled={isPending}
+            aria-disabled={reactivateBlocked || undefined}
+            aria-describedby={describedBy}
+            aria-label={`Reactivate ${userEmail}`}
           >
             Reactivate
           </Button>
@@ -299,45 +462,60 @@ export function UserRowActions({
       </div>
 
       {isSelf && (
-        <p className="text-xs text-muted-foreground">
+        <p id={selfReasonId} className="max-w-md text-left text-xs text-muted-foreground">
           This is your own account. You cannot change your own role, reset your
           own password, or deactivate yourself.
         </p>
       )}
 
       {error && (
-        <p className="max-w-md text-left text-sm text-destructive" role="alert">
+        <p id={errorId} className="max-w-md text-left text-sm text-destructive" role="alert">
           {error}
         </p>
       )}
 
       {issued && (
+        // A labelled group that focus moves into -- not a live region. See
+        // the note on `announcement` above.
         <div
-          role="status"
-          aria-live="polite"
+          ref={panelRef}
+          tabIndex={-1}
+          role="group"
+          aria-labelledby={panelHeadingId}
           data-testid="temp-password-panel"
-          className="flex max-w-md flex-col gap-2 rounded-md border border-amber-600/40 bg-amber-500/10 p-3 text-left"
+          className="flex max-w-md flex-col gap-2 rounded-md border border-warning-border bg-warning p-3 text-left text-warning-foreground outline-none focus:outline-2 focus:outline-offset-2 focus:outline-ring"
         >
-          <p className="text-sm font-medium">Temporary password for {userEmail}</p>
+          <p id={panelHeadingId} className="text-sm font-medium">
+            Temporary password for {userEmail}
+          </p>
           <code
             data-testid="temp-password-value"
             className="select-all rounded bg-background px-2 py-1 font-mono text-sm break-all"
           >
             {issued}
           </code>
-          <p className="text-sm text-muted-foreground">
+          <p className="text-sm">
             This will not be shown again. Copy it now and deliver it out of
             band. If it is lost, reset the password again to issue a new one.
           </p>
-          <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              size="sm"
-              variant="secondary"
-              onClick={() => handleCopy(issued)}
-            >
-              Copy
-            </Button>
+          {!clipboardAvailable() && (
+            <p className="text-sm">
+              Copying automatically is unavailable on this connection. Select
+              the value above and copy it manually.
+            </p>
+          )}
+          <div className="flex flex-wrap items-center gap-2">
+            {clipboardAvailable() && (
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                onClick={() => handleCopy(issued)}
+                aria-label={`Copy the temporary password for ${userEmail}`}
+              >
+                Copy
+              </Button>
+            )}
             <Button
               type="button"
               size="sm"
@@ -345,15 +523,15 @@ export function UserRowActions({
               onClick={() => {
                 setIssued(null);
                 setCopyState("idle");
+                setAnnouncement("");
               }}
+              aria-label={`Dismiss the temporary password for ${userEmail}`}
             >
               Dismiss
             </Button>
-            {copyState === "copied" && (
-              <span className="text-xs text-muted-foreground">Copied.</span>
-            )}
+            {copyState === "copied" && <span className="text-xs">Copied.</span>}
             {copyState === "failed" && (
-              <span className="text-xs text-destructive">
+              <span className="text-xs font-medium">
                 Could not copy automatically. Select the value above and copy
                 it manually.
               </span>

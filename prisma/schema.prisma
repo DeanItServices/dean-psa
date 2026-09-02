@@ -27,6 +27,13 @@ model User {
   role               Role      @default(technician)
   isActive           Boolean   @default(true)
   mustChangePassword Boolean   @default(false)
+  // Token-generation counter. Every JWT carries the value that was current
+  // when it was minted; getCurrentUser() refuses a token whose value differs
+  // from this column. Incrementing it therefore revokes EVERY session issued
+  // before the increment, which is what makes a password reset or change
+  // actually terminate a stolen session -- rotating hashedPassword alone does
+  // not, because a JWT session is self-contained and never re-checks the hash.
+  tokenVersion       Int       @default(0)
   accounts           Account[]
   sessions           Session[]
   createdAt          DateTime  @default(now())
@@ -139,12 +146,12 @@ model Contract {
   companyId String
   company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
-  billingType           BillingType
-  blockHours            Int?
-  flatFeeAmount         Decimal?    @db.Decimal(10, 2)
-  hourlyRate            Decimal?    @db.Decimal(10, 2)
-  slaResponseMinutes    Int?
-  slaResolutionMinutes  Int?
+  billingType          BillingType
+  blockHours           Int?
+  flatFeeAmount        Decimal?    @db.Decimal(10, 2)
+  hourlyRate           Decimal?    @db.Decimal(10, 2)
+  slaResponseMinutes   Int?
+  slaResolutionMinutes Int?
 
   startDate DateTime
   endDate   DateTime?

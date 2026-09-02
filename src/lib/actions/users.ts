@@ -67,6 +67,17 @@ if (256 % TEMP_PASSWORD_ALPHABET.length !== 0) {
 const ADMIN_INVARIANT_LOCK_KEY = 7030303;
 
 /**
+ * Milliseconds a caller may wait for ADMIN_INVARIANT_LOCK_KEY before giving up.
+ *
+ * The critical section is one COUNT plus one UPDATE, so a wait longer than this
+ * means something is wrong, not busy. Must stay comfortably BELOW the
+ * `timeout` passed to $transaction below, so that contention surfaces as a
+ * Postgres lock timeout this module recognises rather than as Prisma's opaque
+ * transaction-API error.
+ */
+const ADMIN_LOCK_TIMEOUT_MS = 3_000;
+
+/**
  * Generates a one-time temporary password.
  *
  * `randomBytes` (CSPRNG) and never `Math.random`, which is a seeded
@@ -163,17 +174,105 @@ function logUserLifecycle(action: string, actorId: string, targetUserId: string)
 async function withAdminInvariantLock<T>(body: (tx: Prisma.TransactionClient) => Promise<T>) {
   return db.$transaction(
     async (tx) => {
-      // Must be the FIRST statement: the lock has to be held before the count
-      // is read, or the count is exactly the unserialized read it replaces.
+      // Bound the LOCK WAIT itself, before taking the lock. Postgres applies
+      // lock_timeout to advisory-lock acquisition, so a waiter that cannot get
+      // the lock within this budget fails fast with SQLSTATE 55P03
+      // (lock_not_available) instead of blocking.
+      //
+      // $executeRawUnsafe because `SET LOCAL` takes a literal, not a bind
+      // parameter. The interpolated value is a numeric module constant on the
+      // line above and never reaches this function from a caller.
+      await tx.$executeRawUnsafe(`SET LOCAL lock_timeout = ${ADMIN_LOCK_TIMEOUT_MS}`);
+
+      // Must be the FIRST statement after the timeout is set: the lock has to
+      // be held before the count is read, or the count is exactly the
+      // unserialized read it replaces.
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(${ADMIN_INVARIANT_LOCK_KEY}::bigint)`;
       return body(tx);
     },
-    // Explicit rather than inherited. `timeout` also bounds how long a waiter
-    // may block on the lock; the critical section is a count plus an update,
-    // so 10s is a very generous ceiling and never a normal wait.
+    // CORRECTED. An earlier comment here claimed `timeout` bounds how long a
+    // waiter may block on the lock. It does not, and that was measured: with
+    // `timeout: 2000` a blocked waiter stayed blocked for 5832ms before Prisma
+    // raised P2028, which then escaped unhandled and reached the admin as
+    // "Something went wrong." Prisma's `timeout` is a deadline it checks
+    // BETWEEN statements; it cannot interrupt a statement already blocked
+    // inside Postgres. Only `SET LOCAL lock_timeout` above does that, and it is
+    // set well below this ceiling so contention surfaces as a clean 55P03 that
+    // isLockContention() turns into a real message, never as a transaction-API
+    // error.
     { maxWait: 5_000, timeout: 10_000 },
   );
 }
+
+/** Postgres SQLSTATE for "canceling statement due to lock timeout". */
+const PG_LOCK_NOT_AVAILABLE = "55P03";
+
+/**
+ * Recursively looks for a `code`/`originalCode` of 55P03 anywhere in a Prisma
+ * error's `meta`.
+ *
+ * A flat `meta.code` check is NOT sufficient, and this was measured rather
+ * than assumed. On this stack (Prisma 7.10 + @prisma/adapter-pg) the SQLSTATE
+ * arrives nested:
+ *
+ *   meta = { driverAdapterError: { cause: { code: "55P03", originalCode: ... } } }
+ *
+ * The nesting is a driver-adapter implementation detail with no stability
+ * guarantee, so this walks the object instead of hard-coding that path. Depth
+ * is capped, which also makes a cyclic structure safe.
+ */
+function hasLockTimeoutCode(value: unknown, depth = 0): boolean {
+  if (depth > 5 || value === null || typeof value !== "object") {
+    return false;
+  }
+
+  const record = value as Record<string, unknown>;
+
+  if (
+    record.code === PG_LOCK_NOT_AVAILABLE ||
+    record.originalCode === PG_LOCK_NOT_AVAILABLE
+  ) {
+    return true;
+  }
+
+  return Object.values(record).some((child) => hasLockTimeoutCode(child, depth + 1));
+}
+
+/**
+ * True for the failure shapes that mean "someone else held the admin-invariant
+ * lock", as opposed to a genuine bug.
+ *
+ *  - P2010 carrying SQLSTATE 55P03: `SET LOCAL lock_timeout` fired while
+ *    waiting for pg_advisory_xact_lock. This is the expected path, and it was
+ *    measured: a blocked waiter threw P2010 after 3044ms with
+ *    `Raw query failed. Code: 55P03. Message: canceling statement due to lock
+ *    timeout`. The message substring is checked as a fallback for exactly the
+ *    case where the nested meta shape changes under us.
+ *  - P2028: Prisma's own transaction deadline. Kept as a belt: if a future
+ *    edit removes lock_timeout or raises it past `timeout`, contention
+ *    degrades to this instead of to an unhandled crash reaching the admin as
+ *    "Something went wrong."
+ *
+ * Anything else is re-thrown. This must never swallow a real error into a
+ * "try again" message the admin would then retry forever.
+ */
+function isLockContention(err: unknown): boolean {
+  if (!(err instanceof Prisma.PrismaClientKnownRequestError)) {
+    return false;
+  }
+
+  if (err.code === "P2028") {
+    return true;
+  }
+
+  if (err.code === "P2010") {
+    return hasLockTimeoutCode(err.meta) || err.message.includes(PG_LOCK_NOT_AVAILABLE);
+  }
+
+  return false;
+}
+
+const LOCK_CONTENTION_ERROR = "Another admin is changing accounts right now. Try again.";
 
 /**
  * Counts ACTIVE admins other than `excludeUserId`.
@@ -182,10 +281,23 @@ async function withAdminInvariantLock<T>(body: (tx: Prisma.TransactionClient) =>
  * refuse demoting an already-deactivated admin, whose demotion cannot reduce
  * the number of admins who can actually log in. Excluding the target is what
  * makes the result mean "who would be left".
+ *
+ * `hashedPassword: { not: null }` is equally essential and was missing. The
+ * column is nullable, and authorize() (src/auth.ts) refuses any row with
+ * `!user.hashedPassword` -- so an admin without one can never sign in. Counting
+ * such a row would let this guard rail report "another admin remains" and
+ * happily deactivate the last admin who can ACTUALLY log in, which is the exact
+ * lockout the invariant exists to prevent. With this clause the count means
+ * what the guard rail claims it means: someone can still log in and administer.
  */
 async function countOtherActiveAdmins(tx: Prisma.TransactionClient, excludeUserId: string) {
   return tx.user.count({
-    where: { role: "admin", isActive: true, id: { not: excludeUserId } },
+    where: {
+      role: "admin",
+      isActive: true,
+      hashedPassword: { not: null },
+      id: { not: excludeUserId },
+    },
   });
 }
 
@@ -289,7 +401,15 @@ export async function resetUserPassword(id: string) {
   try {
     await db.user.update({
       where: { id },
-      data: { hashedPassword, mustChangePassword: true },
+      // tokenVersion is what makes this a real reset. Rotating hashedPassword
+      // alone does NOT log the target out: their session is a self-contained
+      // signed JWT that never re-checks the hash, so before this increment an
+      // attacker riding a stolen session survived the reset untouched -- and
+      // could then use /change-password to set a password of their own.
+      // Incrementing invalidates every token minted for this account (see
+      // getCurrentUser() in src/lib/session.ts), which is what the admin UI
+      // already promised was happening.
+      data: { hashedPassword, mustChangePassword: true, tokenVersion: { increment: 1 } },
       select: { id: true },
     });
   } catch (err) {
@@ -355,6 +475,20 @@ export async function updateUserRole(id: string, formData: FormData) {
     await tx.user.update({ where: { id }, data: { role }, select: { id: true } });
 
     return { success: true as const };
+    // .catch() rather than a surrounding try/catch on purpose: an annotated
+    // `let` would collapse TypeScript's normalized union (every member gaining
+    // `error?: undefined` / `success?: undefined`) into a strict discriminated
+    // union, which breaks the `"error" in result && result.error` form the
+    // client components use. This keeps the action's public return shape
+    // exactly as it was.
+  }).catch((err: unknown) => {
+    // Lock contention is a normal outcome of two admins acting at once, not a
+    // fault. Return it as a message the admin can act on; anything else is a
+    // real failure and must keep propagating.
+    if (isLockContention(err)) {
+      return { error: LOCK_CONTENTION_ERROR };
+    }
+    throw err;
   });
 
   if ("error" in result) {
@@ -405,6 +539,13 @@ export async function deactivateUser(id: string) {
     await tx.user.update({ where: { id }, data: { isActive: false }, select: { id: true } });
 
     return { success: true as const };
+  }).catch((err: unknown) => {
+    // See updateUserRole for why contention is returned rather than thrown,
+    // and why this is a .catch() rather than a try/catch.
+    if (isLockContention(err)) {
+      return { error: LOCK_CONTENTION_ERROR };
+    }
+    throw err;
   });
 
   if ("error" in result) {

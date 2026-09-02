@@ -35,8 +35,10 @@ export default async function ChangePasswordPage() {
   return (
     <Card className="w-full max-w-md">
       <CardHeader>
-        <CardTitle className="text-center text-2xl">
-          Choose a new password
+        {/* h1, not the stock CardTitle <div>: this card is the entire page,
+            so its title is the page's only heading. */}
+        <CardTitle asChild className="text-center text-2xl">
+          <h1>Choose a new password</h1>
         </CardTitle>
         <CardDescription className="text-center">
           Your account is using a temporary password. Set a new one to continue.

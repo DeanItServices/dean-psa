@@ -8,18 +8,18 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { MIN_PASSWORD_LENGTH } from "@/lib/validations/user";
 import { changePasswordAction } from "./actions";
 
-/**
- * Mirrors the server-side minimum in ./actions.ts. This copy drives only the
- * hint text and the native minLength attribute -- the server remains
- * authoritative. Both are pinned at 12 to match 07-03's MIN_PASSWORD_LENGTH;
- * 07-07 replaces both literals with the shared import.
- */
-const MIN_PASSWORD_LENGTH = 12;
+// MIN_PASSWORD_LENGTH is imported, not restated. It drives only the hint text
+// and the native minLength attribute here -- the server remains authoritative.
+// The import is safe from a client component: @/lib/validations/user pulls in
+// only zod, and user-create-form.tsx and user-row-actions.tsx already import
+// ROLE_VALUES from it.
 
 export function ChangePasswordForm() {
   const router = useRouter();
+  const [currentPassword, setCurrentPassword] = React.useState("");
   const [newPassword, setNewPassword] = React.useState("");
   const [confirmPassword, setConfirmPassword] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
@@ -31,7 +31,14 @@ export function ChangePasswordForm() {
     setIsSubmitting(true);
 
     try {
-      const result = await changePasswordAction(newPassword, confirmPassword);
+      // The third argument is an OBJECT, not a third positional string: three
+      // bare strings would be silently transposable and would type-check
+      // either way. The action treats a missing currentPassword as a refusal
+      // (it is typed optional only so the server fix could land before this
+      // form did), so omitting it here is a silent no-op, not a type error.
+      const result = await changePasswordAction(newPassword, confirmPassword, {
+        currentPassword,
+      });
       if (result.error) {
         setError(result.error);
         return;
@@ -46,8 +53,39 @@ export function ChangePasswordForm() {
     }
   }
 
+  // Every error this action returns is about the pair -- too short, or the two
+  // fields disagree -- so both inputs are marked invalid and both point at the
+  // message. `aria-describedby` is a space-separated ID list: the hint stays,
+  // the error is appended in front of it so it is read first.
+  const errorId = "change-password-error";
+
+  // method="post" below is load-bearing, for the same reason as /login: a form
+  // with only an onSubmit handler falls back to the HTML default when submitted
+  // before React hydrates -- a GET carrying every named field in the query
+  // string. Here that would be the current AND the new password, landing in the
+  // URL bar, browser history and every access log.
   return (
-    <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+    <form method="post" onSubmit={handleSubmit} className="flex flex-col gap-4">
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="current-password">Current password</Label>
+        <Input
+          id="current-password"
+          name="current-password"
+          type="password"
+          autoComplete="current-password"
+          required
+          aria-invalid={error ? true : undefined}
+          aria-describedby={
+            error ? `${errorId} current-password-hint` : "current-password-hint"
+          }
+          value={currentPassword}
+          onChange={(event) => setCurrentPassword(event.target.value)}
+        />
+        <p id="current-password-hint" className="text-sm text-muted-foreground">
+          The password you just signed in with. If an admin issued you a
+          temporary one, enter that.
+        </p>
+      </div>
       <div className="flex flex-col gap-2">
         <Label htmlFor="new-password">New password</Label>
         <Input
@@ -57,7 +95,10 @@ export function ChangePasswordForm() {
           autoComplete="new-password"
           required
           minLength={MIN_PASSWORD_LENGTH}
-          aria-describedby="new-password-hint"
+          aria-invalid={error ? true : undefined}
+          aria-describedby={
+            error ? `${errorId} new-password-hint` : "new-password-hint"
+          }
           value={newPassword}
           onChange={(event) => setNewPassword(event.target.value)}
         />
@@ -74,12 +115,14 @@ export function ChangePasswordForm() {
           autoComplete="new-password"
           required
           minLength={MIN_PASSWORD_LENGTH}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? errorId : undefined}
           value={confirmPassword}
           onChange={(event) => setConfirmPassword(event.target.value)}
         />
       </div>
       {error && (
-        <p className="text-sm text-destructive" role="alert">
+        <p id={errorId} className="text-sm text-destructive" role="alert">
           {error}
         </p>
       )}

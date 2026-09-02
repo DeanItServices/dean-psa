@@ -41,13 +41,34 @@ async function main() {
   for (const { email, name, role } of TEST_USERS) {
     await db.user.upsert({
       where: { email },
-      // Not `update: {}`: a re-seed against a database that already holds
-      // these accounts must still set the activation columns, or the E2E
-      // login fixture breaks once the active-user gate is live.
-      update: {
-        isActive: true,
-        mustChangePassword: false,
-      },
+      // `update: {}` -- CREATE ONLY, NEVER CLOBBER. Chosen deliberately over
+      // "restore the fixture fully" in review cycle 2.
+      //
+      // The previous version wrote `isActive: true, mustChangePassword: false`
+      // on every re-seed, justified as keeping the E2E login fixture working.
+      // Two things were wrong with that:
+      //
+      //  1. It did not do what it claimed. The branch omitted hashedPassword,
+      //     role and name, so it never actually restored the fixture -- it only
+      //     ever reset the two SECURITY-STATE columns, which is the one part
+      //     that is dangerous to reset.
+      //  2. Its only guard is NODE_ENV === "production", which is unset in an
+      //     ordinary dev shell. `npm run db:seed` with DATABASE_URL pointed at
+      //     any other database therefore silently REACTIVATED five accounts
+      //     whose shared password is published at line 15 of this file --
+      //     including an admin. Reactivating a deliberately deactivated
+      //     well-known-credential account is exactly the outcome Phase 7's
+      //     offboarding feature exists to prevent.
+      //
+      // So this script now only ever CREATES. It never mutates a row it did not
+      // create, which is the correct posture for a script whose safety rail is
+      // an environment variable. The E2E concern it was meant to solve is
+      // narrower than it looked: fresh databases get the columns from `create`
+      // below, and a seed account that someone deliberately deactivated during
+      // testing is now recoverable through the product itself -- /admin/users
+      // has a Reactivate action, which is precisely what this phase added and
+      // did not exist when the previous comment was written.
+      update: {},
       create: {
         email,
         name,

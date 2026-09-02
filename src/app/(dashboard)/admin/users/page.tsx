@@ -73,7 +73,13 @@ export default async function AdminUsersPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Add a user</CardTitle>
+          {/* h2: this page already has an h1, so the card titles are the
+              level below it. CardTitle renders a <div> unless told otherwise,
+              which is how these surfaces ended up looking like headings while
+              being invisible to heading navigation. */}
+          <CardTitle asChild>
+            <h2>Add a user</h2>
+          </CardTitle>
           <CardDescription>
             Creates the account and generates a temporary password, shown to
             you once. The new user must choose their own password before they
@@ -87,7 +93,9 @@ export default async function AdminUsersPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Staff accounts</CardTitle>
+          <CardTitle asChild>
+            <h2>Staff accounts</h2>
+          </CardTitle>
           <CardDescription>
             {users.length} account{users.length === 1 ? "" : "s"}, {activeCount}{" "}
             active. Deactivated accounts are kept, not deleted -- their
@@ -120,14 +128,25 @@ export default async function AdminUsersPage() {
                     key={user.id}
                     data-testid={`user-row-${user.email}`}
                     data-active={user.isActive}
-                    className={user.isActive ? undefined : "opacity-60"}
                   >
-                    <TableCell className="font-medium">
+                    {/* th, not td: without a row header the per-row controls
+                        are announced with no indication of WHICH account they
+                        act on. `scope="row"` is what makes a screen reader
+                        read this cell as the row's context. (The controls also
+                        carry explicit aria-labels -- table-reading mode is not
+                        the only way a user reaches them.)
+
+                        The deactivated-row opacity-60 that used to sit on this
+                        <TableRow> is gone: layered over text-muted-foreground
+                        it fell below 4.5:1, and the Deactivated badge in the
+                        Status cell already carries the state. data-active is
+                        untouched. */}
+                    <TableHead scope="row" className="font-medium">
                       {user.name ?? <span className="text-muted-foreground">--</span>}
                       {user.id === actor.id && (
                         <span className="ml-2 text-xs text-muted-foreground">(you)</span>
                       )}
-                    </TableCell>
+                    </TableHead>
                     <TableCell>{user.email}</TableCell>
                     <TableCell>
                       <Badge variant="secondary">{user.role}</Badge>

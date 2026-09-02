@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { getCurrentUser } from "@/lib/session";
+import { requireActiveUser } from "@/lib/session";
 import { can } from "@/lib/permissions";
 import { db } from "@/lib/db";
 import { getClientProfitability, getCurrentMonthRange, isValidDateString } from "@/lib/reporting";
@@ -40,11 +40,11 @@ export default async function ProfitabilityReportPage({
 }: {
   searchParams: Promise<{ from?: string; to?: string; companyId?: string; contractId?: string }>;
 }) {
-  const user = await getCurrentUser();
-
-  if (!user) {
-    redirect("/login");
-  }
+  // requireActiveUser(), not getCurrentUser(): a shared layout does not
+  // re-render on a soft navigation, so the inactive / mustChangePassword gate
+  // has to run in the leaf too. See src/lib/session.ts. It also subsumes the
+  // !user -> /login redirect this page used to open-code.
+  const user = await requireActiveUser();
 
   if (!can(user.role, "report:view_all")) {
     redirect("/unauthorized");

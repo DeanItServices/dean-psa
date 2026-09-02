@@ -77,11 +77,17 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           return null;
         }
 
+        // tokenVersion is captured HERE, at mint time, and carried on the JWT
+        // by the callback below. getCurrentUser() compares it against the
+        // column on every request, so any later increment (password reset,
+        // password change) invalidates this token and every other one issued
+        // before it.
         return {
           id: user.id,
           email: user.email,
           name: user.name,
           role: user.role,
+          tokenVersion: user.tokenVersion,
         };
       },
     }),
@@ -91,9 +97,16 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     jwt: async ({ token, user }) => {
       // `user` is only defined on the initial sign-in call; persist the
       // fields we need onto the token for every subsequent request.
+      //
+      // tokenVersion is stamped ONCE, at sign-in, and never refreshed from the
+      // database afterwards. That is the whole mechanism: a token frozen at
+      // the generation it was minted in, compared against the live column by
+      // getCurrentUser(). Re-reading it here on every call would make the
+      // token silently self-heal after a revoking write and defeat the check.
       if (user) {
         token.id = user.id as string;
         token.role = user.role as typeof token.role;
+        token.tokenVersion = user.tokenVersion;
       }
       return token;
     },
@@ -101,6 +114,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (session.user) {
         session.user.id = token.id as string;
         session.user.role = token.role as typeof session.user.role;
+        session.user.tokenVersion = token.tokenVersion;
       }
       return session;
     },

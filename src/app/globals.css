@@ -20,6 +20,16 @@
   --accent: oklch(0.967 0.001 286.375);
   --accent-foreground: oklch(0.21 0.006 285.885);
   --destructive: oklch(0.577 0.245 27.325);
+  /* Warning surface. Added in the Phase 7 review because the one-time
+   * temporary-password panels were the only place in src/ reaching past the
+   * token layer into the raw Tailwind palette (border-amber-600/40 +
+   * bg-amber-500/10), which the .dark block below could not restyle -- the
+   * one surface carrying an unrecoverable secret washed out in dark mode.
+   * Contrast (sRGB, WCAG 2.x) for the light values: foreground on surface
+   * 8.8:1, border on card 3.4:1, border on surface 3.1:1. */
+  --warning: oklch(0.968 0.035 92);
+  --warning-foreground: oklch(0.395 0.075 60);
+  --warning-border: oklch(0.64 0.12 84);
   --border: oklch(0.92 0.004 286.32);
   --input: oklch(0.92 0.004 286.32);
   --ring: oklch(0.705 0.015 286.067);
@@ -54,6 +64,11 @@
   --accent: oklch(0.274 0.006 286.033);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);
+  /* Dark counterparts: foreground on surface 11.3:1, surface on card 1.3:1
+   * (a visible tint), border on card 3.2:1 so the panel edge still reads. */
+  --warning: oklch(0.31 0.045 75);
+  --warning-foreground: oklch(0.945 0.035 92);
+  --warning-border: oklch(0.52 0.085 80);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.552 0.016 285.938);
@@ -92,6 +107,9 @@
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-warning-border: var(--warning-border);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);

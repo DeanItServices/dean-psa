@@ -1,10 +1,36 @@
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { PrismaClient } from "@prisma/client";
-import { PrismaPg } from "@prisma/adapter-pg";
+import { randomBytes } from "node:crypto";
 import { decode } from "next-auth/jwt";
 import { test, expect, type BrowserContext, type Page } from "@playwright/test";
-import { loginAs, loginWith, loginExpectingFailure, ROLE_CREDENTIALS } from "./fixtures";
+import {
+  loginAs,
+  loginExpectingFailure,
+  loginWith,
+  newIsolatedContext,
+} from "./fixtures";
+import {
+  captureActionCall,
+  invokeAction,
+  retargetRoleChange,
+  retargetUserId,
+  type ActionCall,
+} from "./actions";
+import { E2E_EMAIL_DOMAIN, E2E_EMAIL_PREFIX, disconnectPrisma, envValue, prisma } from "./db";
+import {
+  confirmInAlertDialog,
+  control,
+  createUserViaUi as createUser,
+  expectPathname,
+  rowControl,
+  rowUserId,
+  selectRole,
+  setNewPassword,
+  userRow,
+} from "./admin-users";
+// Relative, not "@/lib/validations/user": the alias resolves through
+// tsconfig's `paths`, and the runner's resolver is not the bundler's. A
+// relative specifier cannot be wrong. The point is that the policy floor this
+// spec asserts against is THE one the server enforces, not a 12 retyped here.
+import { MIN_PASSWORD_LENGTH } from "../src/lib/validations/user";
 
 /**
  * E2E spec: user lifecycle (Plan 07-07) -- the integration gate for Phase 7.
@@ -15,16 +41,25 @@ import { loginAs, loginWith, loginExpectingFailure, ROLE_CREDENTIALS } from "./f
  * load-bearing claims executable:
  *
  *   - a created user is forced through /change-password before anything else
+ *   - that force is a SERVER-ACTION boundary, not only a rendering redirect
  *   - a role change is authoritative on the very NEXT request, with no
  *     re-login and no change of session cookie (the JWT still carries the OLD
  *     role -- that is the entire point of 07-02's database fresh-check)
+ *   - a password change or admin reset REVOKES every other session for that
+ *     account (07-02's tokenVersion), while the acting device stays signed in
+ *   - the change-password action requires the current password, and enforces
+ *     the shared MIN_PASSWORD_LENGTH, on the server
  *   - a deactivated user's next request lands on /login, and the row survives
- *   - a deactivated user cannot log back in, and cannot tell that apart from
- *     a wrong password
- *   - a mixed-case email is normalized at creation, so the account is
- *     actually reachable by authorize()'s lowercased lookup
- *   - /admin/users is authorized server-side, not merely hidden from the nav
- *   - an admin cannot deactivate, demote or password-reset themselves
+ *   - a deactivated user cannot log back in
+ *   - a mixed-case email is normalized at creation, and a duplicate is refused
+ *   - /admin/users is authorized server-side, and so is every action behind it
+ *   - an admin cannot deactivate, demote or password-reset themselves, proven
+ *     by calling the actions rather than by observing that the buttons look
+ *     unavailable
+ *
+ * WHAT IS NOT HERE. The last-active-admin invariant is in
+ * e2e/last-active-admin.spec.ts, in its own Playwright project, because it can
+ * only be correct when no other spec is holding a second active admin open.
  *
  * TAG. Every test carries `@user-lifecycle` so this file can be run alone as
  * Phase 7's blocking gate:  npm run test:e2e -- --grep @user-lifecycle
@@ -39,30 +74,40 @@ import { loginAs, loginWith, loginExpectingFailure, ROLE_CREDENTIALS } from "./f
  * WHILE this file runs. Deactivating, demoting or resetting any of them --
  * even transiently -- would break those specs for reasons having nothing to
  * do with what they test. Every subject account here is created by this spec
- * with a run-unique address and torn down in afterAll; the seeded accounts
- * are used read-only as login actors, exactly as the other specs use them,
- * and the last test in this file asserts they were left as found.
+ * with a run-unique address and torn down in afterAll. That claim is now
+ * CHECKED IN e2e/global-teardown.ts rather than by a test in this file: as a
+ * test it was distributed across workers like any other and could run before
+ * the mutations it was supposed to be guarding, which is no guard at all.
  *
  * Real, source-confirmed selectors (read from the components during this
- * plan's execution, not guessed):
- *   - src/app/(dashboard)/admin/users/page.tsx: `<h1>Users</h1>`; each row
- *     carries `data-testid="user-row-{email}"` and `data-active="{bool}"`.
+ * review cycle, not guessed):
+ *   - src/app/(dashboard)/admin/users/page.tsx: `<h1>Users</h1>`, card titles
+ *     are `<h2>`; each row carries `data-testid="user-row-{email}"` and
+ *     `data-active="{bool}"`, and the Name cell is a `<th scope="row">`
+ *     (role `rowheader`).
  *   - src/components/admin/user-create-form.tsx: `#new-user-name`,
  *     `#new-user-email`, Radix Select trigger `#new-user-role`, submit button
  *     "Create user"; the one-time value is
  *     `[data-testid="temp-password-value"]` inside
- *     `[data-testid="temp-password-panel"]`.
+ *     `[data-testid="temp-password-panel"]`, which is a `role="group"` that
+ *     takes focus -- NOT a live region. The always-mounted live region is
+ *     `[data-testid="temp-password-announcement"]`, and there is one PER ROW
+ *     plus one in the create form, so it must always be row-scoped.
  *   - src/components/admin/user-row-actions.tsx: Radix Select trigger
- *     `#role-{userId}` and buttons "Change role" / "Reset password" /
- *     "Deactivate" / "Reactivate"; destructive actions confirm through the
- *     styled ui/alert-dialog wrapper (never window.confirm), so the confirm
- *     control is a button scoped to the open `alertdialog`.
+ *     `#role-{userId}` and buttons whose ACCESSIBLE NAMES now carry the
+ *     account they act on: "Change role for {email}", "Reset password for
+ *     {email}", "Deactivate {email}", "Reactivate {email}". Destructive
+ *     actions confirm through the styled ui/alert-dialog wrapper (never
+ *     window.confirm); the buttons INSIDE those dialogs are unchanged, so the
+ *     confirm control is still "Deactivate"/"Reset password" scoped to the
+ *     open `alertdialog`.
+ *   - Row controls are no longer `disabled`. They carry
+ *     `aria-disabled="true"` and stay focusable, so `toBeDisabled()` does not
+ *     apply -- see the self-target test.
  *   - src/app/(auth)/change-password/change-password-form.tsx:
- *     `#new-password`, `#confirm-password`, button "Set new password".
- *   - `CardTitle` (src/components/ui/card.tsx) renders a plain `<div>`, NOT a
- *     heading, so "Choose a new password" and "Access Denied" are matched by
- *     text rather than by role. Verified by reading the component after a
- *     getByRole("heading") assertion failed against the real page.
+ *     `#current-password` (NEW and required), `#new-password`,
+ *     `#confirm-password`, button "Set new password".
+ *   - /login and /change-password now have a `main` landmark and a real `h1`.
  */
 
 // ---------------------------------------------------------------------------
@@ -73,75 +118,37 @@ import { loginAs, loginWith, loginExpectingFailure, ROLE_CREDENTIALS } from "./f
  * Every account this file creates is addressed under this prefix, unique per
  * worker process per run. Teardown deletes by the EXACT addresses recorded in
  * `createdEmails` rather than by a `startsWith` sweep, so a concurrent run of
- * this same spec cannot delete another run's subjects.
+ * this same spec cannot delete another run's subjects. e2e/global-teardown.ts
+ * adds a pattern sweep on top, for the rows a killed worker never reached.
  */
 const RUN_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-const EMAIL_PREFIX = `e2e-lifecycle-${RUN_ID}`;
+const EMAIL_PREFIX = `${E2E_EMAIL_PREFIX}${RUN_ID}`;
 
 /** Addresses created through the UI during this run, in stored (lowercase) form. */
 const createdEmails = new Set<string>();
 
 function subjectEmail(label: string): string {
-  return `${EMAIL_PREFIX}-${label}@e2e.invalid`;
+  return `${EMAIL_PREFIX}-${label}${E2E_EMAIL_DOMAIN}`;
 }
 
 /**
- * A password that clears MIN_PASSWORD_LENGTH (12, src/lib/validations/user.ts)
- * with room to spare. Deliberately NOT the seeded fixtures' "Password123!" --
- * these throwaway accounts must not double as a way into anything else.
- */
-const CHOSEN_PASSWORD = "e2e-Chosen-Password-9134";
-
-/**
- * DATABASE_URL for the assertions that read stored state.
+ * A password that clears MIN_PASSWORD_LENGTH with room to spare.
  *
- * The Playwright runner process is not `next dev` and loads no dotenv of its
- * own, so `.env` is read here explicitly rather than assumed to be in the
- * environment. Parsed with a few lines rather than by pulling in `dotenv`,
- * which is present only transitively via Prisma and is not a declared
- * dependency of this project.
+ * GENERATED PER RUN, not a constant. The previous literal was a working
+ * password for a live, active account whose address is derivable from this
+ * file, committed in the repository, on an instance served over plaintext
+ * HTTP. Teardown normally removes those accounts within seconds; a killed
+ * worker does not, which is why e2e/global-teardown.ts sweeps as well. Between
+ * the two, an orphan is now an account whose password exists only in a
+ * finished process's memory.
  */
-function envValue(name: string): string {
-  const fromProcess = process.env[name];
-  if (fromProcess) {
-    return fromProcess;
-  }
-
-  const envPath = path.resolve(process.cwd(), ".env");
-  const contents = readFileSync(envPath, "utf8");
-
-  for (const rawLine of contents.split("\n")) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#")) continue;
-
-    const eq = line.indexOf("=");
-    if (eq === -1) continue;
-    if (line.slice(0, eq).trim() !== name) continue;
-
-    return line
-      .slice(eq + 1)
-      .trim()
-      .replace(/^["']|["']$/g, "");
-  }
-
-  throw new Error(
-    `${name} is not set and was not found in ${envPath}. ` +
-      "This spec needs it to read stored state back, decode the session token, " +
-      "and tear down the accounts it creates.",
-  );
-}
-
-function databaseUrl(): string {
-  return envValue("DATABASE_URL");
-}
-
-let prismaClient: PrismaClient | null = null;
-
-function prisma(): PrismaClient {
-  prismaClient ??= new PrismaClient({
-    adapter: new PrismaPg({ connectionString: databaseUrl() }),
-  });
-  return prismaClient;
+function freshPassword(label: string): string {
+  const password = `e2e-${label}-${randomBytes(12).toString("base64url")}`;
+  expect(
+    password.length,
+    "generated E2E passwords must clear the policy floor they are asserted against",
+  ).toBeGreaterThanOrEqual(MIN_PASSWORD_LENGTH);
+  return password;
 }
 
 /**
@@ -155,7 +162,14 @@ function prisma(): PrismaClient {
 async function readUserRow(email: string) {
   return prisma().user.findUnique({
     where: { email },
-    select: { id: true, email: true, role: true, isActive: true, mustChangePassword: true },
+    select: {
+      id: true,
+      email: true,
+      role: true,
+      isActive: true,
+      mustChangePassword: true,
+      tokenVersion: true,
+    },
   });
 }
 
@@ -182,81 +196,27 @@ test.afterAll(async () => {
       await prisma().user.deleteMany({ where: { email: { in: [...createdEmails] } } });
     }
   } finally {
-    await prismaClient?.$disconnect();
-    prismaClient = null;
+    await disconnectPrisma();
   }
 });
 
 // ---------------------------------------------------------------------------
-// Page-driving helpers (the real UI only -- no Server Action is called
-// over the wire, and no spec here fabricates an affordance that does not
-// exist)
+// Page-driving helpers
 // ---------------------------------------------------------------------------
-
-function baseURL(): string {
-  const configured = test.info().project.use.baseURL;
-  if (!configured) {
-    throw new Error("playwright.config.ts must define use.baseURL");
-  }
-  return configured;
-}
-
-/**
- * Per-context client IP, sent as X-Forwarded-For.
- *
- * NOT a convenience, and not masking a failure this spec should be reporting.
- * src/middleware.ts rate-limits 60 requests per 60 seconds PER IP, and its
- * `getClientIp()` falls back to the literal key "unknown" when no
- * X-Forwarded-For or X-Real-IP header is present. With no reverse proxy in
- * front of the app -- the topology this repo's docker-compose.yml ships, as
- * middleware.ts itself documents at length -- every browser context in every
- * spec therefore shares ONE 60-request budget.
- *
- * Measured directly during this plan: 60 consecutive requests to
- * /unauthorized returned 307, and requests 61 through 75 returned 429. A
- * Server Action POST that receives a 429 rejects in the browser, and 07-05's
- * handlers turn that into "Something went wrong. Please try again." -- which
- * is exactly the failure this spec hit before these headers were added, and
- * it is indistinguishable from a genuine guard-rail bug at the assertion.
- *
- * Giving each context its own address is what a correctly-deployed reverse
- * proxy would produce anyway (distinct clients, distinct buckets), and it
- * keeps this spec testing the user lifecycle rather than the rate limiter.
- * The shared-bucket behaviour itself is a real finding referred to the owner
- * of src/middleware.ts -- see this plan's summary. Addresses come from the
- * RFC 2544 benchmarking range, which is not routable.
- */
-const IP_BASE = Math.floor(Math.random() * 250) + 1;
-let ipCounter = 0;
-
-function isolatedClientHeaders(): Record<string, string> {
-  ipCounter += 1;
-  return { "x-forwarded-for": `198.18.${IP_BASE}.${ipCounter}` };
-}
-
-/** A browser context with its own rate-limit bucket and the configured baseURL. */
-async function newIsolatedContext(
-  browser: import("@playwright/test").Browser,
-): Promise<BrowserContext> {
-  return browser.newContext({
-    baseURL: baseURL(),
-    extraHTTPHeaders: isolatedClientHeaders(),
-  });
-}
 
 /**
  * Decodes the live Auth.js session cookie so its CLAIMS can be asserted.
  *
  * The session is a self-contained signed+encrypted JWT with no server-side
  * store (src/auth.ts explains why: Auth.js v5 rejects the database strategy
- * with a Credentials-only provider list). `role` and `id` are written into it
- * by the jwt callback on the initial sign-in only, and never refreshed --
- * which is exactly what makes it possible to prove a role change took effect
- * WITHOUT the token having been reissued.
+ * with a Credentials-only provider list). `role`, `id` and `tokenVersion` are
+ * written into it by the jwt callback on the initial sign-in only, and never
+ * refreshed -- which is exactly what makes it possible to prove a role change
+ * took effect WITHOUT the token having been reissued.
  */
 async function decodeSessionCookie(
   context: BrowserContext,
-): Promise<{ id?: string; role?: string }> {
+): Promise<{ id?: string; role?: string; tokenVersion?: number }> {
   const cookie = (await context.cookies()).find((candidate) =>
     candidate.name.includes("authjs.session-token"),
   );
@@ -275,30 +235,17 @@ async function decodeSessionCookie(
   return {
     id: typeof record.id === "string" ? record.id : undefined,
     role: typeof record.role === "string" ? record.role : undefined,
+    tokenVersion: typeof record.tokenVersion === "number" ? record.tokenVersion : undefined,
   };
 }
 
-/** Asserts the current pathname, retrying while a redirect settles. */
-async function expectPathname(page: Page, pathname: string): Promise<void> {
-  await expect
-    .poll(() => new URL(page.url()).pathname, {
-      message: `expected to be on ${pathname}`,
-    })
-    .toBe(pathname);
-}
-
-/** Picks a value in a Radix Select by its trigger id. */
-async function selectRole(page: Page, triggerId: string, label: string): Promise<void> {
-  await page.locator(`#${triggerId}`).click();
-  await page.getByRole("option", { name: label, exact: true }).click();
-}
-
 /**
- * Creates a user through the real /admin/users form and returns the one-time
- * temporary password the panel shows.
+ * Creates a user through the real form AND records it for this run's teardown.
  *
- * `emailToType` is passed verbatim so the normalization test can type an
- * address that is not its own stored form.
+ * The bookkeeping is what makes teardown exact-address-keyed rather than a
+ * pattern sweep, so a concurrent run of this spec cannot delete another run's
+ * subjects. createUserSchema lowercases before the action writes
+ * (src/lib/validations/user.ts), so the STORED form is what is recorded.
  */
 async function createUserViaUi(
   adminPage: Page,
@@ -306,160 +253,38 @@ async function createUserViaUi(
   emailToType: string,
   roleLabel: string,
 ): Promise<{ tempPassword: string }> {
-  await adminPage.goto("/admin/users");
-
-  await adminPage.locator("#new-user-name").fill(name);
-  await adminPage.locator("#new-user-email").fill(emailToType);
-  await selectRole(adminPage, "new-user-role", roleLabel);
-  await adminPage.getByRole("button", { name: "Create user" }).click();
-
-  const panel = adminPage.getByTestId("temp-password-panel");
-  await expect(panel).toBeVisible();
-
-  const tempPassword = (await adminPage.getByTestId("temp-password-value").textContent())?.trim();
-  expect(tempPassword, "the create form must surface a temporary password").toBeTruthy();
-
-  // Recorded for teardown in the STORED form: createUserSchema lowercases
-  // before the action writes (src/lib/validations/user.ts).
+  const tempPassword = await createUser(adminPage, name, emailToType, roleLabel);
   createdEmails.add(emailToType.toLowerCase());
-
-  return { tempPassword: tempPassword as string };
-}
-
-function userRow(adminPage: Page, email: string) {
-  return adminPage.getByTestId(`user-row-${email}`);
+  return { tempPassword };
 }
 
 /**
- * Confirms a destructive row action through the alert dialog.
+ * Deactivates then reactivates `email` through the UI, and returns the
+ * captured Server Action call for each.
  *
- * 07-05 deliberately uses the styled ui/alert-dialog wrapper rather than
- * window.confirm precisely so this is drivable from a locator. The confirm
- * button is scoped to the open `alertdialog` so it cannot match the row's own
- * trigger button of the same name.
+ * The capture is the point: the ids are per-build and are read off real
+ * invocations (see e2e/actions.ts). Doing both leaves the victim exactly as it
+ * was found, so a test can harvest the ids it needs without its arrange step
+ * changing anything it later asserts on.
  */
-async function confirmInAlertDialog(page: Page, buttonName: string): Promise<void> {
-  const dialog = page.getByRole("alertdialog");
-  await expect(dialog).toBeVisible();
-  await dialog.getByRole("button", { name: buttonName, exact: true }).click();
-  await expect(dialog).toBeHidden();
-}
+async function captureLifecycleCalls(
+  adminPage: Page,
+  email: string,
+): Promise<{ deactivate: ActionCall; reactivate: ActionCall }> {
+  const row = userRow(adminPage, email);
 
-/**
- * Fires a control's React onClick handler even though the control is
- * `disabled`, and fails loudly if it cannot.
- *
- * WHY THIS IS THE TEST RATHER THAN A WORKAROUND FOR ONE.
- * 07-05 disables the three self-target controls client-side and says in its
- * own summary that this "is UX only -- the server refusal is the guarantee".
- * A spec that only asserted the buttons are disabled would prove the UX and
- * prove nothing whatsoever about the guarantee -- which is exactly the
- * "hiding a control is not authorization" failure mode this phase exists to
- * close. The refusals in src/lib/actions/users.ts are the real boundary, and
- * a boundary with no regression test is a boundary that can be deleted by
- * accident.
- *
- * WHY IT REACHES FOR REACT'S PROPS INSTEAD OF JUST CLICKING.
- * Established empirically during this plan, not assumed. Removing the DOM
- * `disabled` attribute is NOT sufficient: React's synthetic event system
- * suppresses onClick for a form control whose *fiber props* carry
- * `disabled: true`, independently of the DOM attribute. A probe against the
- * running app confirmed all three steps -- after hydration the element's
- * `__reactProps$*` bag reports `disabled: "true"`, a real Playwright click
- * with the attribute stripped opens nothing, and invoking the handler off
- * that same props bag does open the dialog. Radix's Select trigger is
- * unreachable by any of these routes (it re-checks `disabled` internally),
- * which is why the demotion attempt below submits the role already selected.
- *
- * WHAT IT COSTS. A dependency on React's internal `__reactProps$` key. If a
- * future React changes that, this throws a named error rather than silently
- * passing -- the one failure mode that would be unacceptable here.
- */
-async function invokeOnce(page: Page, selector: string): Promise<string> {
-  return page.locator(selector).evaluate((el) => {
-    const propsKey = Object.keys(el).find((key) => key.startsWith("__reactProps$"));
-
-    if (!propsKey) {
-      return "NOT_HYDRATED";
-    }
-
-    const props = (el as unknown as Record<string, Record<string, unknown>>)[propsKey];
-    const onClick = props.onClick;
-
-    if (typeof onClick !== "function") {
-      return "NO_ONCLICK_PROP";
-    }
-
-    (onClick as (event: unknown) => void)({
-      type: "click",
-      button: 0,
-      ctrlKey: false,
-      currentTarget: el,
-      target: el,
-      defaultPrevented: false,
-      preventDefault() {},
-      stopPropagation() {},
-      nativeEvent: new MouseEvent("click"),
-    });
-
-    return "INVOKED";
+  const deactivate = await captureActionCall(adminPage, async () => {
+    await rowControl(adminPage, email, control.deactivate(email)).click();
+    await confirmInAlertDialog(adminPage, "Deactivate");
+    await expect(row).toHaveAttribute("data-active", "false");
   });
-}
 
-/**
- * Invokes a disabled control's handler until `settled()` reports the intended
- * effect, or fails with the reason it could not.
- *
- * The retry is not papering over flakiness in the assertion -- the assertion
- * is untouched and still has to hold. It exists because `__reactProps$`
- * appears on the DOM node slightly BEFORE React has mounted the component,
- * and a handler invoked in that window logs "Can't perform a React state
- * update on a component that hasn't mounted yet" and does nothing. Observed
- * directly during this plan; retrying rides out that window instead of
- * guessing a sleep long enough to cover it.
- */
-async function invokeDisabledControl(
-  page: Page,
-  selector: string,
-  settled: () => Promise<boolean>,
-): Promise<void> {
-  await expect
-    .poll(
-      async () => {
-        if (await settled()) return "SETTLED";
+  const reactivate = await captureActionCall(adminPage, async () => {
+    await rowControl(adminPage, email, control.reactivate(email)).click();
+    await expect(row).toHaveAttribute("data-active", "true");
+  });
 
-        const outcome = await invokeOnce(page, selector);
-        if (outcome !== "INVOKED") return outcome;
-
-        await page.waitForTimeout(250);
-        return (await settled()) ? "SETTLED" : "PENDING";
-      },
-      {
-        timeout: 20_000,
-        message:
-          `could not drive the disabled control ${selector} to its effect. ` +
-          "This spec pushes the self-target refusals past 07-05's client-side `disabled` " +
-          "attributes to prove the SERVER refuses them. A result of NO_ONCLICK_PROP or " +
-          "NOT_HYDRATED means the technique needs revisiting -- do not delete the " +
-          "assertions it guards.",
-      },
-    )
-    .toBe("SETTLED");
-}
-
-/**
- * Blocks until React on /admin/users is genuinely mounted and handling
- * events, proven by driving a control rather than by waiting a fixed time:
- * the create form's role Select is opened and dismissed. Radix only opens it
- * once its handlers are live.
- */
-async function waitForAdminUsersInteractive(page: Page): Promise<void> {
-  const option = page.getByRole("option", { name: "Technician", exact: true });
-
-  await page.locator("#new-user-role").click();
-  await expect(option).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(option).toHaveCount(0);
+  return { deactivate, reactivate };
 }
 
 // ---------------------------------------------------------------------------
@@ -480,6 +305,7 @@ test.describe("@user-lifecycle account lifecycle", () => {
 
   const SUBJECT_EMAIL = subjectEmail("subject");
   const SUBJECT_NAME = "E2E Lifecycle Subject";
+  const CHOSEN_PASSWORD = freshPassword("chosen");
 
   let adminContext: BrowserContext;
   let adminPage: Page;
@@ -524,6 +350,12 @@ test.describe("@user-lifecycle account lifecycle", () => {
     await expect(row).toBeVisible();
     await expect(row).toHaveAttribute("data-active", "true");
 
+    // The Name cell is a `<th scope="row">`, which is what gives a screen
+    // reader the row's context when it reads the per-row controls. Asserted by
+    // ROLE so a regression back to a plain `<td>` fails here rather than
+    // silently removing the association.
+    await expect(row.getByRole("rowheader")).toContainText(SUBJECT_NAME);
+
     // "Exactly once" is a load-bearing claim, not a caption: the value lives
     // in component state and nowhere else, so a reload must not bring it back
     // and it must not have been persisted anywhere retrievable.
@@ -537,25 +369,37 @@ test.describe("@user-lifecycle account lifecycle", () => {
       expectPath: "/change-password",
     });
 
-    await expect(subjectPage.getByText("Choose a new password")).toBeVisible();
+    // A real <h1> inside the (auth) layout's <main>, both added this cycle.
+    await expect(
+      subjectPage.getByRole("heading", { name: "Choose a new password", level: 1 }),
+    ).toBeVisible();
+    await expect(subjectPage.getByRole("main")).toBeVisible();
   });
 
-  test("a flagged user cannot reach any dashboard route", async () => {
-    // requireRole() enforces the flag for every Server Action module and the
-    // (dashboard) layout enforces it for rendering, so no authenticated
-    // surface is reachable while it is set. Before 07-02 this was a rendering
-    // gate only.
+  test("a flagged user is bounced from every dashboard route", async () => {
+    // THIS IS THE UX GATE, AND ONLY THE UX GATE. The (dashboard) layout and
+    // (since this cycle) each page's own requireActiveUser() perform this
+    // redirect while rendering. The (dashboard) layout says so itself: its
+    // redirect "is UX, NOT the security boundary". Deleting requireRole()'s
+    // matching check would leave every assertion below passing.
+    //
+    // The boundary -- a Server Action refused for a caller carrying the flag
+    // -- is asserted in "a flagged admin is refused at the Server Action
+    // boundary" further down, which is the test that would fail.
     for (const route of ["/", "/tickets", "/clients", "/admin/users"]) {
       await subjectPage.goto(route);
       await expectPathname(subjectPage, "/change-password");
     }
   });
 
-  test("setting a new password clears the flag and lands the user on /", async () => {
+  test("setting a new password clears the flag, revokes older tokens, and keeps this device signed in", async () => {
+    const before = await readUserRow(SUBJECT_EMAIL);
+
     await subjectPage.goto("/change-password");
-    await subjectPage.locator("#new-password").fill(CHOSEN_PASSWORD);
-    await subjectPage.locator("#confirm-password").fill(CHOSEN_PASSWORD);
-    await subjectPage.getByRole("button", { name: "Set new password" }).click();
+    // The current password is REQUIRED now: an attacker riding a stolen
+    // session holds the cookie but not the credential, and without this could
+    // convert the session into a password of their own.
+    await setNewPassword(subjectPage, tempPassword, CHOSEN_PASSWORD);
 
     await subjectPage.waitForURL((url) => url.pathname === "/");
 
@@ -569,7 +413,58 @@ test.describe("@user-lifecycle account lifecycle", () => {
     // twice on this page (the greeting and the user menu).
     await expect(subjectPage.getByRole("heading", { name: /^Welcome back/ })).toBeVisible();
 
-    expect((await readUserRow(SUBJECT_EMAIL))?.mustChangePassword).toBe(false);
+    const after = await readUserRow(SUBJECT_EMAIL);
+    expect(after?.mustChangePassword).toBe(false);
+
+    // The write bumped tokenVersion, which revokes every token minted before
+    // it -- including the one this browser was holding one request ago. That
+    // this device is still signed in (the reload above) is the action's
+    // re-mint working; if the signIn() call after the update ever stops
+    // happening, the reload lands on /login and this test names it.
+    expect(
+      after?.tokenVersion,
+      "changePasswordAction must increment tokenVersion, or the change revokes nothing",
+    ).toBe((before?.tokenVersion ?? 0) + 1);
+
+    const claims = await decodeSessionCookie(subjectContext);
+    expect(
+      claims.tokenVersion,
+      "the re-minted token must carry the NEW tokenVersion, or this device is running on a token the server should be refusing",
+    ).toBe(after?.tokenVersion);
+  });
+
+  test("the flag is enforced by the page, not only by the layout, on a soft navigation", async () => {
+    // WHAT THIS ISOLATES. Next.js does not re-render a shared layout on a
+    // client-side navigation between two routes in the same group, so the
+    // (dashboard) layout's gate does not run at all here. Group A added
+    // requireActiveUser() to each page for exactly that hole: a user whose
+    // flag is set while they are already browsing would otherwise keep
+    // navigating the whole dashboard.
+    //
+    // The flag is set DIRECTLY IN THE DATABASE rather than through
+    // resetUserPassword, deliberately: that action also increments
+    // tokenVersion, which would revoke the session and send this user to
+    // /login -- proving the revocation, not the page gate. This writes the one
+    // field under test and nothing else.
+    //
+    // HONEST LIMIT: if a future Next.js did re-render the layout on this
+    // navigation, this test would still pass while proving less. It is written
+    // against the navigation shape the layout demonstrably does not cover.
+    await subjectPage.goto("/");
+    await expectPathname(subjectPage, "/");
+
+    await prisma().user.update({
+      where: { id: subjectId },
+      data: { mustChangePassword: true },
+    });
+
+    await subjectPage.getByRole("link", { name: "Tickets", exact: true }).click();
+    await expectPathname(subjectPage, "/change-password");
+
+    await prisma().user.update({
+      where: { id: subjectId },
+      data: { mustChangePassword: false },
+    });
   });
 
   test("a role change takes effect on the very next request, with no re-login", async () => {
@@ -580,9 +475,7 @@ test.describe("@user-lifecycle account lifecycle", () => {
     // The admin promotes them, from a different browser context entirely.
     await adminPage.goto("/admin/users");
     await selectRole(adminPage, `role-${subjectId}`, "Admin");
-    await userRow(adminPage, SUBJECT_EMAIL)
-      .getByRole("button", { name: "Change role", exact: true })
-      .click();
+    await rowControl(adminPage, SUBJECT_EMAIL, control.changeRole(SUBJECT_EMAIL)).click();
     await expect.poll(async () => (await readUserRow(SUBJECT_EMAIL))?.role).toBe("admin");
 
     // THE HEADLINE CLAIM. No sign-out, no sign-in, no new cookie -- the JWT
@@ -617,9 +510,7 @@ test.describe("@user-lifecycle account lifecycle", () => {
     // the invariant is not engaged.
     await adminPage.goto("/admin/users");
     await selectRole(adminPage, `role-${subjectId}`, "Technician");
-    await userRow(adminPage, SUBJECT_EMAIL)
-      .getByRole("button", { name: "Change role", exact: true })
-      .click();
+    await rowControl(adminPage, SUBJECT_EMAIL, control.changeRole(SUBJECT_EMAIL)).click();
     await expect.poll(async () => (await readUserRow(SUBJECT_EMAIL))?.role).toBe("technician");
 
     await subjectPage.goto("/admin/users");
@@ -631,9 +522,7 @@ test.describe("@user-lifecycle account lifecycle", () => {
     await expectPathname(subjectPage, "/");
 
     await adminPage.goto("/admin/users");
-    await userRow(adminPage, SUBJECT_EMAIL)
-      .getByRole("button", { name: "Deactivate", exact: true })
-      .click();
+    await rowControl(adminPage, SUBJECT_EMAIL, control.deactivate(SUBJECT_EMAIL)).click();
     await confirmInAlertDialog(adminPage, "Deactivate");
     await expect(userRow(adminPage, SUBJECT_EMAIL)).toHaveAttribute("data-active", "false");
 
@@ -646,32 +535,28 @@ test.describe("@user-lifecycle account lifecycle", () => {
     expect(stored?.isActive).toBe(false);
   });
 
-  test("a deactivated user cannot log in, and cannot tell that apart from a wrong password", async () => {
-    const deactivatedMessage = await loginExpectingFailure(
-      subjectPage,
-      SUBJECT_EMAIL,
-      CHOSEN_PASSWORD,
-    );
+  test("a deactivated user cannot log in", async () => {
+    // NARROWED THIS CYCLE, and the removal matters more than what is left.
+    // This test used to also assert that a deactivated login and a
+    // wrong-password login produce the SAME message, captioned as proof the
+    // form does not enumerate accounts. That assertion could not fail:
+    // loginAction (src/app/(auth)/login/actions.ts) catches every AuthError
+    // and returns that one literal, so both sides of the comparison are the
+    // same constant no matter what authorize() does -- including if it started
+    // returning a distinct "account disabled" error. Proving authorize()
+    // itself is uniform belongs in a unit test on that function, and is
+    // referred to Phase 9 rather than faked here.
+    //
+    // What remains is a real claim: the credential is correct and the login is
+    // refused anyway, because the account is deactivated.
+    const message = await loginExpectingFailure(subjectPage, SUBJECT_EMAIL, CHOSEN_PASSWORD);
     await expectPathname(subjectPage, "/login");
-
-    const wrongPasswordMessage = await loginExpectingFailure(
-      subjectPage,
-      SUBJECT_EMAIL,
-      `${CHOSEN_PASSWORD}-definitely-wrong`,
-    );
-
-    expect(deactivatedMessage).toBe("Invalid email or password");
-    expect(
-      deactivatedMessage,
-      "a deactivated account must be indistinguishable from a wrong password, or the login form enumerates accounts",
-    ).toBe(wrongPasswordMessage);
+    expect(message).toBe("Invalid email or password");
   });
 
   test("reactivation restores access with the user's existing password", async () => {
     await adminPage.goto("/admin/users");
-    await userRow(adminPage, SUBJECT_EMAIL)
-      .getByRole("button", { name: "Reactivate", exact: true })
-      .click();
+    await rowControl(adminPage, SUBJECT_EMAIL, control.reactivate(SUBJECT_EMAIL)).click();
     await expect(userRow(adminPage, SUBJECT_EMAIL)).toHaveAttribute("data-active", "true");
 
     // Reactivation is not a password reset -- the password they chose still
@@ -684,20 +569,37 @@ test.describe("@user-lifecycle account lifecycle", () => {
     expect(stored?.mustChangePassword).toBe(false);
   });
 
-  test("an admin resets another user's password and the user is forced through /change-password again", async () => {
+  test("an admin password reset revokes the user's live session and forces /change-password", async () => {
+    const before = await readUserRow(SUBJECT_EMAIL);
+
     await adminPage.goto("/admin/users");
-    const row = userRow(adminPage, SUBJECT_EMAIL);
-    await row.getByRole("button", { name: "Reset password", exact: true }).click();
+    await rowControl(adminPage, SUBJECT_EMAIL, control.resetPassword(SUBJECT_EMAIL)).click();
     await confirmInAlertDialog(adminPage, "Reset password");
 
+    // Row-scoped: `temp-password-panel` exists in the create form too, and
+    // `temp-password-announcement` exists once per row PLUS once in the create
+    // form, so anything unscoped trips Playwright's strict mode.
+    const row = userRow(adminPage, SUBJECT_EMAIL);
     const panel = row.getByTestId("temp-password-panel");
     await expect(panel).toBeVisible();
-    const reissued = ((await row.getByTestId("temp-password-value").textContent()) ?? "").trim();
+    const reissued = ((await panel.getByTestId("temp-password-value").textContent()) ?? "").trim();
 
     expect(reissued).toMatch(/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{20}$/);
     expect(reissued, "a reset must issue a NEW value, not re-show the old one").not.toBe(
       tempPassword,
     );
+
+    // THE REVOCATION. The subject's browser is holding a valid, unexpired
+    // session cookie minted before the reset. Rotating the password hash alone
+    // would not touch it -- the JWT never re-checks the hash -- so before
+    // tokenVersion existed, an attacker riding a stolen session survived the
+    // reset untouched and could walk to /change-password and set a password of
+    // their own. Their very next request must now land on /login.
+    const after = await readUserRow(SUBJECT_EMAIL);
+    expect(after?.tokenVersion).toBe((before?.tokenVersion ?? 0) + 1);
+
+    await subjectPage.goto("/");
+    await expectPathname(subjectPage, "/login");
 
     // The old password stops working immediately -- the confirmation dialog
     // promises exactly this, so it is asserted rather than assumed.
@@ -706,20 +608,22 @@ test.describe("@user-lifecycle account lifecycle", () => {
 
     // The reissued one works, and drops them straight back into the forced
     // password change -- resetUserPassword sets mustChangePassword.
-    expect((await readUserRow(SUBJECT_EMAIL))?.mustChangePassword).toBe(true);
+    expect(after?.mustChangePassword).toBe(true);
     await loginWith(subjectPage, SUBJECT_EMAIL, reissued, { expectPath: "/change-password" });
-    await expect(subjectPage.getByText("Choose a new password")).toBeVisible();
+    await expect(
+      subjectPage.getByRole("heading", { name: "Choose a new password", level: 1 }),
+    ).toBeVisible();
   });
 });
 
 // ---------------------------------------------------------------------------
-// Email normalization
+// Email normalization and duplicates
 // ---------------------------------------------------------------------------
 
 test("@user-lifecycle a mixed-case email is normalized so the account is actually reachable", async ({
   browser,
 }) => {
-  const typedEmail = `E2E-Lifecycle-${RUN_ID}-MiXeD@E2E.Invalid`;
+  const typedEmail = `E2E-Lifecycle-${RUN_ID}-MiXeD${E2E_EMAIL_DOMAIN.toUpperCase()}`;
   const storedEmail = typedEmail.toLowerCase();
 
   const adminContext = await newIsolatedContext(browser);
@@ -748,39 +652,200 @@ test("@user-lifecycle a mixed-case email is normalized so the account is actuall
     // And it is reachable typing the address the way the admin typed it,
     // which is the way it will be handed to the new user.
     await loginWith(subjectPage, typedEmail, tempPassword, { expectPath: "/change-password" });
-    await expect(subjectPage.getByText("Choose a new password")).toBeVisible();
+    await expect(
+      subjectPage.getByRole("heading", { name: "Choose a new password", level: 1 }),
+    ).toBeVisible();
   } finally {
     await adminContext.close();
     await subjectContext.close();
   }
 });
 
-// ---------------------------------------------------------------------------
-// Admin-only gating
-// ---------------------------------------------------------------------------
-
-test("@user-lifecycle /admin/users is authorized server-side, not merely hidden from the nav", async ({
+test("@user-lifecycle a duplicate email is refused, including a case-only duplicate", async ({
   browser,
 }) => {
-  const context = await newIsolatedContext(browser);
-  const page = await context.newPage();
+  const email = subjectEmail("dup");
+
+  const adminContext = await newIsolatedContext(browser);
+  const adminPage = await adminContext.newPage();
 
   try {
+    await loginAs(adminPage, "admin");
+    await createUserViaUi(adminPage, "E2E Duplicate First", email, "Technician");
+
+    // Typed in a DIFFERENT case, which is the case that matters: the schema
+    // lowercases before the write, so this collides on the unique index
+    // (Prisma P2002) rather than creating a second row that authorize() could
+    // never reach. Without the normalization this would "succeed" and hand the
+    // admin a temporary password for an account that can never be logged into.
+    await adminPage.goto("/admin/users");
+    await adminPage.locator("#new-user-name").fill("E2E Duplicate Second");
+    await adminPage.locator("#new-user-email").fill(email.toUpperCase());
+    await adminPage.getByRole("button", { name: "Create user" }).click();
+
+    await expect(adminPage.locator("#create-user-error")).toHaveText(
+      "An account with that email address already exists.",
+    );
+    // No credential was issued for the refused attempt.
+    await expect(adminPage.getByTestId("temp-password-panel")).toHaveCount(0);
+
+    expect(
+      await prisma().user.count({
+        where: { email: { startsWith: `${EMAIL_PREFIX}-dup`, endsWith: E2E_EMAIL_DOMAIN } },
+      }),
+      "the refused create must not have written a second row",
+    ).toBe(1);
+  } finally {
+    await adminContext.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Admin-only gating -- the page AND the actions behind it
+// ---------------------------------------------------------------------------
+
+test("@user-lifecycle /admin/users and its Server Actions are authorized server-side, not merely hidden", async ({
+  browser,
+}) => {
+  test.setTimeout(90_000);
+
+  const victimEmail = subjectEmail("gating-victim");
+
+  const adminContext = await newIsolatedContext(browser);
+  const adminPage = await adminContext.newPage();
+  const techContext = await newIsolatedContext(browser);
+  const techPage = await techContext.newPage();
+
+  try {
+    await loginAs(adminPage, "admin");
+    await createUserViaUi(adminPage, "E2E Gating Victim", victimEmail, "Technician");
+    await adminPage.goto("/admin/users");
+    const victimId = await rowUserId(adminPage, victimEmail);
+    const { deactivate } = await captureLifecycleCalls(adminPage, victimEmail);
+
     // Uses the seeded technician read-only, exactly as the other three specs
     // do. Nothing about this account is mutated.
-    await loginAs(page, "technician");
+    await loginAs(techPage, "technician");
 
     // The sidebar link is gated on admin:manage_users so a technician never
     // sees it -- but 07-05's own must_have says hiding the link is not
     // authorization. Type the URL directly.
-    await expect(page.getByRole("link", { name: "Users", exact: true })).toHaveCount(0);
+    await expect(techPage.getByRole("link", { name: "Users", exact: true })).toHaveCount(0);
 
-    await page.goto("/admin/users");
-    await expectPathname(page, "/unauthorized");
-    await expect(page.getByText("Access Denied")).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Users", exact: true })).toHaveCount(0);
+    await techPage.goto("/admin/users");
+    await expectPathname(techPage, "/unauthorized");
+    await expect(techPage.getByText("Access Denied")).toBeVisible();
+    await expect(techPage.getByRole("heading", { name: "Users", exact: true })).toHaveCount(0);
+
+    // AND THE ACTION ITSELF. Being unable to reach the page is not the same as
+    // being unable to reach what the page calls: the Server Action has a
+    // stable, publicly-addressable id and needs no page to invoke. Sent with
+    // the technician's own cookies, it must be refused by requireRole().
+    const response = await invokeAction(
+      techContext,
+      "/admin/users",
+      deactivate,
+      retargetUserId(deactivate, victimId),
+    );
+
+    expect(
+      response.redirectedTo,
+      "a technician invoking deactivateUser must be redirected by requireRole(), not served",
+    ).toBe("/unauthorized");
+    expect(response.result, "the action must not have returned a result to a technician").toBeNull();
+    expect(
+      (await readUserRow(victimEmail))?.isActive,
+      "the refused action must not have written",
+    ).toBe(true);
   } finally {
-    await context.close();
+    await adminContext.close();
+    await techContext.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The mustChangePassword boundary
+// ---------------------------------------------------------------------------
+
+test("@user-lifecycle a flagged admin is refused at the Server Action boundary and at the QBO routes", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+
+  const flaggedEmail = subjectEmail("flagged-admin");
+  const victimEmail = subjectEmail("flagged-victim");
+
+  const adminContext = await newIsolatedContext(browser);
+  const adminPage = await adminContext.newPage();
+  const flaggedContext = await newIsolatedContext(browser);
+  const flaggedPage = await flaggedContext.newPage();
+
+  try {
+    // THE ACTOR IS AN ADMIN, and that is what makes this test say anything.
+    // requireRole() checks the ROLE before it checks the flag, so a flagged
+    // technician is refused for being a technician and the flag is never
+    // reached. Only a caller who would otherwise be authorized isolates
+    // mustChangePassword as the reason.
+    await loginAs(adminPage, "admin");
+    await createUserViaUi(adminPage, "E2E Flagged Victim", victimEmail, "Technician");
+    const { tempPassword } = await createUserViaUi(
+      adminPage,
+      "E2E Flagged Admin",
+      flaggedEmail,
+      "Admin",
+    );
+
+    await adminPage.goto("/admin/users");
+    const victimId = await rowUserId(adminPage, victimEmail);
+    const { deactivate } = await captureLifecycleCalls(adminPage, victimEmail);
+
+    // The flagged admin signs in and is parked on /change-password. Their
+    // password is never changed, so the flag stays set for everything below.
+    await loginWith(flaggedPage, flaggedEmail, tempPassword, { expectPath: "/change-password" });
+
+    // (1) THE ACTUAL BOUNDARY. This is the assertion the old criterion-9 test
+    // did not make. Navigating to dashboard routes and seeing /change-password
+    // exercises the (dashboard) layout, whose own comment says that redirect
+    // "is UX, NOT the security boundary" -- delete requireRole()'s flag check
+    // and that test still passes. This one does not: it invokes the Server
+    // Action directly, with the flagged admin's own session, and the refusal
+    // can only come from requireRole().
+    const refused = await invokeAction(
+      flaggedContext,
+      "/admin/users",
+      deactivate,
+      retargetUserId(deactivate, victimId),
+    );
+
+    expect(
+      refused.redirectedTo,
+      "requireRole() must bounce a flagged caller to /change-password before the action runs",
+    ).toBe("/change-password");
+    expect(refused.result, "the action must not have returned a result").toBeNull();
+    expect(
+      (await readUserRow(victimEmail))?.isActive,
+      "the refused action must not have written",
+    ).toBe(true);
+
+    // (2) /api/qbo/connect. Verified by grep only until now, and never once
+    // executed. It is a Route Handler, so it cannot call requireRole() (that
+    // helper throws next/navigation's redirect digest, which this pipeline
+    // does not intercept) and repeats the gate by hand -- which is exactly the
+    // kind of hand-copied check that rots without a test.
+    const connect = await flaggedContext.request.get("/api/qbo/connect", { maxRedirects: 0 });
+    expect(connect.status(), "/api/qbo/connect must redirect a flagged admin").toBe(307);
+    expect(new URL(connect.headers()["location"]!).pathname).toBe("/change-password");
+
+    // (3) /api/qbo/callback, which gained the same gate this cycle. Reached
+    // with no code/state at all: the flag check must come BEFORE the OAuth
+    // state validation, or a flagged caller gets a state_mismatch redirect
+    // instead of being refused, and the gate is decorative.
+    const callback = await flaggedContext.request.get("/api/qbo/callback", { maxRedirects: 0 });
+    expect(callback.status(), "/api/qbo/callback must redirect a flagged admin").toBe(307);
+    expect(new URL(callback.headers()["location"]!).pathname).toBe("/change-password");
+  } finally {
+    await adminContext.close();
+    await flaggedContext.close();
   }
 });
 
@@ -793,27 +858,31 @@ test("@user-lifecycle /admin/users is authorized server-side, not merely hidden 
  * admin@mspdemo.local.
  *
  * That is a safety property, not a stylistic one. This test deliberately
- * drives past the client-side `disabled` attributes to reach the server-side
- * refusals. If one of those refusals were missing -- precisely what the test
- * exists to detect -- the action would SUCCEED, and pointed at the seeded
- * admin it would deactivate or demote the account all three other specs log
- * in as, mid-run, under `fullyParallel: true`. Pointed at a throwaway admin,
- * a genuine product bug fails this test loudly and damages nothing.
+ * reaches past the client-side guards to the server-side refusals. If one of
+ * those refusals were missing -- precisely what the test exists to detect --
+ * the action would SUCCEED, and pointed at the seeded admin it would
+ * deactivate or demote the account all three other specs log in as, mid-run,
+ * under `fullyParallel: true`. Pointed at a throwaway admin, a genuine product
+ * bug fails this test loudly and damages nothing.
  *
  * Creating a second admin is also harmless with respect to the
  * last-active-admin invariant, which is a floor: it can only ever be moved
- * further from firing, never closer.
+ * further from firing, never closer. (It is not harmless to
+ * e2e/last-active-admin.spec.ts, which needs the opposite -- hence that spec's
+ * own project, which runs only after this one has finished and torn down.)
  */
 test("@user-lifecycle an admin cannot deactivate, demote or password-reset themselves", async ({
   browser,
 }) => {
-  // This test provisions a whole second admin through the real UI (create,
-  // first login, forced password change) before it can even begin, then drives
-  // three refusals with a retry budget on each. That does not fit Playwright's
-  // 30s default, and the default is not a claim about the product.
-  test.setTimeout(120_000);
+  // Provisions a whole second admin through the real UI (create, first login,
+  // forced password change) plus a throwaway victim before it can begin. That
+  // does not fit Playwright's 30s default, and the default is not a claim
+  // about the product.
+  test.setTimeout(150_000);
 
   const selfAdminEmail = subjectEmail("selfadmin");
+  const victimEmail = subjectEmail("self-victim");
+  const actorPassword = freshPassword("selfadmin");
 
   const seedContext = await newIsolatedContext(browser);
   const seedPage = await seedContext.newPage();
@@ -822,8 +891,10 @@ test("@user-lifecycle an admin cannot deactivate, demote or password-reset thems
 
   try {
     // Arrange: the seeded admin creates a second admin, who is the ACTOR for
-    // everything that follows.
+    // everything that follows, plus a victim the actor can legitimately act on
+    // -- which is how the per-build Server Action ids are captured.
     await loginAs(seedPage, "admin");
+    await createUserViaUi(seedPage, "E2E Self Target Victim", victimEmail, "Technician");
     const { tempPassword } = await createUserViaUi(
       seedPage,
       "E2E Self Target Admin",
@@ -832,70 +903,136 @@ test("@user-lifecycle an admin cannot deactivate, demote or password-reset thems
     );
 
     await loginWith(actorPage, selfAdminEmail, tempPassword, { expectPath: "/change-password" });
-    await actorPage.locator("#new-password").fill(CHOSEN_PASSWORD);
-    await actorPage.locator("#confirm-password").fill(CHOSEN_PASSWORD);
-    await actorPage.getByRole("button", { name: "Set new password" }).click();
+    await setNewPassword(actorPage, tempPassword, actorPassword);
     await actorPage.waitForURL((actorUrl) => actorUrl.pathname === "/");
 
     const actorId = (await readUserRow(selfAdminEmail))?.id;
     expect(actorId).toBeTruthy();
 
     await actorPage.goto("/admin/users");
-    const rowSelector = `[data-testid="user-row-${selfAdminEmail}"]`;
     const ownRow = userRow(actorPage, selfAdminEmail);
     await expect(ownRow).toBeVisible();
     await expect(ownRow).toContainText("(you)");
 
-    // LAYER 1 -- the UX an admin actually experiences. All three controls are
-    // disabled, with the reason stated on the row.
-    await expect(ownRow.getByRole("button", { name: "Change role", exact: true })).toBeDisabled();
-    await expect(ownRow.getByRole("button", { name: "Reset password", exact: true })).toBeDisabled();
-    await expect(ownRow.getByRole("button", { name: "Deactivate", exact: true })).toBeDisabled();
+    // LAYER 1 -- the UX an admin actually experiences, and it is no longer
+    // `disabled`. The controls stay focusable and carry aria-disabled, because
+    // `disabled` dropped focus to <body> mid-flow and took the explanation
+    // below out of the tab order entirely. toBeDisabled() would now fail
+    // against a correct implementation, so the attribute is asserted directly.
+    for (const name of [
+      control.changeRole(selfAdminEmail),
+      control.resetPassword(selfAdminEmail),
+      control.deactivate(selfAdminEmail),
+    ]) {
+      await expect(
+        ownRow.getByRole("button", { name, exact: true }),
+        `${name} must be blocked with aria-disabled, not the disabled attribute`,
+      ).toHaveAttribute("aria-disabled", "true");
+    }
     await expect(ownRow).toContainText("This is your own account.");
 
-    const alert = ownRow.getByRole("alert");
-    const dialogOpen = () => actorPage.getByRole("alertdialog").isVisible();
+    // ...and they are still FOCUSABLE, which is the whole point of the change:
+    // `disabled` takes a control out of the tab order, so the explanation
+    // above was text nobody arriving by keyboard would ever reach. Focus is
+    // moved by script rather than by locator.focus() so this assertion cannot
+    // itself depend on Playwright's actionability rules.
+    for (const name of [
+      control.changeRole(selfAdminEmail),
+      control.resetPassword(selfAdminEmail),
+      control.deactivate(selfAdminEmail),
+    ]) {
+      const focused = await ownRow
+        .getByRole("button", { name, exact: true })
+        .evaluate((node) => {
+          (node as HTMLElement).focus();
+          return document.activeElement === node;
+        });
+      expect(focused, `${name} must stay in the tab order`).toBe(true);
+    }
 
-    // LAYER 2 -- the guarantee. Drive each action anyway; the server must
-    // refuse, say so visibly, and change nothing.
-    await waitForAdminUsersInteractive(actorPage);
+    // ...and the block is real, not just announced: clicking does nothing.
+    //
+    // `force: true` is REQUIRED here and is not papering over flakiness.
+    // Playwright's actionability check for "enabled" calls its own
+    // getAriaDisabled(), which treats aria-disabled="true" on a button role as
+    // disabled -- so a plain .click() waits for the control to become enabled
+    // and hangs until the test times out. Read out of the installed
+    // playwright-core rather than guessed, after exactly that timeout. A
+    // browser places no such restriction on a real user, so forcing the click
+    // is the faithful simulation and the unforced one is the fiction.
+    await ownRow
+      .getByRole("button", { name: control.deactivate(selfAdminEmail), exact: true })
+      .click({ force: true });
+    await expect(
+      actorPage.getByRole("alertdialog"),
+      "a blocked trigger must not open its confirmation dialog",
+    ).toHaveCount(0);
+
+    // LAYER 2 -- THE GUARANTEE. Everything above is client-side, and 07-05
+    // says so itself: the row component "contains no authorization logic". The
+    // refusals in src/lib/actions/users.ts are the boundary, and a boundary
+    // with no regression test is one that can be deleted by accident. The
+    // actions are therefore invoked directly, with the actor's own session,
+    // targeting the actor -- the exact request the browser would send if the
+    // client-side guard were removed.
+    //
+    // The previous version of this test drove the React fiber's onClick past a
+    // `disabled` attribute. That technique now invokes a handler that returns
+    // early, so it would have proved the client guard and reported it as the
+    // server one.
+    const victimId = await rowUserId(actorPage, victimEmail);
+    const { deactivate, reactivate } = await captureLifecycleCalls(actorPage, victimEmail);
+
+    const resetCall = await captureActionCall(actorPage, async () => {
+      await rowControl(actorPage, victimEmail, control.resetPassword(victimEmail)).click();
+      await confirmInAlertDialog(actorPage, "Reset password");
+      await expect(
+        userRow(actorPage, victimEmail).getByTestId("temp-password-panel"),
+      ).toBeVisible();
+    });
+
+    const roleCall = await captureActionCall(actorPage, async () => {
+      await selectRole(actorPage, `role-${victimId}`, "Sales");
+      await rowControl(actorPage, victimEmail, control.changeRole(victimEmail)).click();
+      await expect.poll(async () => (await readUserRow(victimEmail))?.role).toBe("sales");
+    });
 
     // (a) Reset password.
-    await invokeDisabledControl(
-      actorPage,
-      `${rowSelector} button:has-text("Reset password")`,
-      dialogOpen,
+    const reset = await invokeAction(
+      actorContext,
+      "/admin/users",
+      resetCall,
+      retargetUserId(resetCall, actorId!),
     );
-    await confirmInAlertDialog(actorPage, "Reset password");
-    await expect(alert).toContainText("You cannot reset your own password here");
-    await expect(actorPage.getByTestId("temp-password-panel")).toHaveCount(0);
+    expect(reset.result?.error).toContain("You cannot reset your own password here");
+    expect(reset.result?.tempPassword, "no credential may be issued by a refused reset").toBeUndefined();
 
     // (b) Deactivate.
-    await invokeDisabledControl(
-      actorPage,
-      `${rowSelector} button:has-text("Deactivate")`,
-      dialogOpen,
+    const deactivated = await invokeAction(
+      actorContext,
+      "/admin/users",
+      deactivate,
+      retargetUserId(deactivate, actorId!),
     );
-    await confirmInAlertDialog(actorPage, "Deactivate");
-    await expect(alert).toContainText("You cannot deactivate your own account");
-    await expect(ownRow).toHaveAttribute("data-active", "true");
+    expect(deactivated.result?.error).toContain("You cannot deactivate your own account");
 
-    // (c) Demote. The role Select on one's own row cannot be opened by any
-    // client-side route (Radix re-checks `disabled` inside its own handlers,
-    // verified by probe), so the submitted role is necessarily the one
-    // already selected -- "admin". That still exercises the guard rail under
-    // test: updateUserRole refuses on `id === actor.id` BEFORE it parses or
-    // looks at the role at all (src/lib/actions/users.ts), so the refusal
-    // reached here is the self-target refusal and nothing else.
-    await invokeDisabledControl(
-      actorPage,
-      `${rowSelector} button:has-text("Change role")`,
-      async () => ((await alert.textContent()) ?? "").includes("You cannot change your own role"),
+    // (c) Demote -- WITH A GENUINELY DIFFERENT ROLE. The previous version
+    // submitted "admin" for an admin actor, because the Radix Select on one's
+    // own row cannot be opened; nothing was actually being lowered, so a
+    // regression that narrowed the guard to same-role submissions would have
+    // left real self-demotion possible and this test green. retargetRoleChange
+    // asserts the substitution reached the wire.
+    const demoted = await invokeAction(
+      actorContext,
+      "/admin/users",
+      roleCall,
+      retargetRoleChange(roleCall, actorId!, "technician"),
     );
-    await expect(alert).toContainText("You cannot change your own role");
+    expect(demoted.result?.error).toContain("You cannot change your own role");
 
-    // The row is the rendering; this is the record. A UI that merely failed
-    // to re-render would be indistinguishable from a server that refused.
+    // The response is the rendering; this is the record. A server that
+    // returned an error string while still writing would be indistinguishable
+    // from one that refused.
     const stored = await readUserRow(selfAdminEmail);
     expect(stored?.isActive, "self-deactivation must not have taken effect").toBe(true);
     expect(stored?.role, "self-demotion must not have taken effect").toBe("admin");
@@ -907,6 +1044,19 @@ test("@user-lifecycle an admin cannot deactivate, demote or password-reset thems
     // rails: an admin must not be able to lock themselves out mid-session.
     await actorPage.goto("/admin/users");
     await expectPathname(actorPage, "/admin/users");
+
+    // AND THE SAME ACTIONS STILL WORK ON SOMEONE ELSE, so the three refusals
+    // above are the self-target guard rails and not a blanket failure that
+    // would pass this test for the wrong reason.
+    const other = await invokeAction(
+      actorContext,
+      "/admin/users",
+      reactivate,
+      retargetUserId(reactivate, victimId),
+    );
+    expect(other.result?.success, "the actor must still be able to act on OTHER accounts").toBe(
+      true,
+    );
   } finally {
     await seedContext.close();
     await actorContext.close();
@@ -914,26 +1064,216 @@ test("@user-lifecycle an admin cannot deactivate, demote or password-reset thems
 });
 
 // ---------------------------------------------------------------------------
-// The seeded fixtures are left exactly as they were found
+// Server-side validation the browser will not let you submit
 // ---------------------------------------------------------------------------
 
-/**
- * A guard, not a feature test.
- *
- * This spec runs concurrently with three others that log in as these five
- * accounts. If anything here ever mutated one of them, the resulting failures
- * would surface somewhere else entirely, in a spec with nothing to do with
- * Phase 7. Naming the invariant here attributes the breakage where it
- * belongs.
- */
-test("@user-lifecycle the five seeded fixture accounts are untouched", async () => {
-  for (const { email } of Object.values(ROLE_CREDENTIALS)) {
-    const row = await readUserRow(email);
-    expect(row, `seeded fixture ${email} must exist`).not.toBeNull();
-    expect(row?.isActive, `seeded fixture ${email} must still be active`).toBe(true);
+test("@user-lifecycle the change-password action enforces its own floors, not the browser's", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+
+  const email = subjectEmail("changepw");
+  const chosen = freshPassword("changepw");
+
+  const adminContext = await newIsolatedContext(browser);
+  const adminPage = await adminContext.newPage();
+  const subjectContext = await newIsolatedContext(browser);
+  const subjectPage = await subjectContext.newPage();
+
+  try {
+    await loginAs(adminPage, "admin");
+    const { tempPassword } = await createUserViaUi(adminPage, "E2E Change PW", email, "Technician");
+    await loginWith(subjectPage, email, tempPassword, { expectPath: "/change-password" });
+
+    // (1) THE WRONG CURRENT PASSWORD IS REFUSED. This is the check that stops
+    // an attacker riding a stolen session from converting it into a password
+    // of their own -- they hold the cookie but not the credential. Driven
+    // through the real form, and the request it produces is captured so the
+    // remaining cases can be sent directly.
+    const call = await captureActionCall(subjectPage, async () => {
+      await setNewPassword(subjectPage, `${tempPassword}-wrong`, chosen);
+      await expect(subjectPage.locator("#change-password-error")).toHaveText(
+        "Current password is incorrect.",
+      );
+    });
     expect(
-      row?.mustChangePassword,
-      `seeded fixture ${email} must not be flagged for password change`,
-    ).toBe(false);
+      (await readUserRow(email))?.mustChangePassword,
+      "a refused change must leave the flag set",
+    ).toBe(true);
+
+    // (2) NO CURRENT PASSWORD AT ALL. The form marks the field `required`, so
+    // the browser will not submit it -- which means the server-side refusal is
+    // unreachable from the UI and would rot unnoticed. The parameter is typed
+    // optional (so the fix could land before the form did) and is required at
+    // runtime; this is the assertion that keeps that true.
+    const omitted = await invokeAction(
+      subjectContext,
+      "/change-password",
+      call,
+      JSON.stringify([chosen, chosen]),
+    );
+    expect(omitted.result?.error).toBe("Enter your current password.");
+
+    // (3) BELOW THE POLICY FLOOR. `minLength` on the input is the browser's
+    // opinion; MIN_PASSWORD_LENGTH in src/lib/validations/user.ts is the
+    // server's, and it is imported here rather than restated so a change to
+    // the policy cannot leave this test asserting the old number.
+    const tooShort = "a".repeat(MIN_PASSWORD_LENGTH - 1);
+    const short = await invokeAction(
+      subjectContext,
+      "/change-password",
+      call,
+      JSON.stringify([tooShort, tooShort, { currentPassword: tempPassword }]),
+    );
+    expect(short.result?.error).toBe(
+      `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`,
+    );
+
+    // (4) MISMATCHED CONFIRMATION.
+    const mismatch = await invokeAction(
+      subjectContext,
+      "/change-password",
+      call,
+      JSON.stringify([chosen, `${chosen}x`, { currentPassword: tempPassword }]),
+    );
+    expect(mismatch.result?.error).toBe("Passwords do not match.");
+
+    // (5) RE-SETTING THE TEMPORARY PASSWORD IS REFUSED. Allowing it would
+    // clear mustChangePassword while leaving the admin-issued credential in
+    // place -- the exact outcome this page exists to prevent, and the one an
+    // impatient user would reach for.
+    const reuse = await invokeAction(
+      subjectContext,
+      "/change-password",
+      call,
+      JSON.stringify([tempPassword, tempPassword, { currentPassword: tempPassword }]),
+    );
+    expect(reuse.result?.error).toBe("Choose a password different from your current one.");
+
+    // Nothing above changed anything.
+    const stillFlagged = await readUserRow(email);
+    expect(stillFlagged?.mustChangePassword).toBe(true);
+
+    // And the honest path still works, from the same page, through the form.
+    await subjectPage.goto("/change-password");
+    await setNewPassword(subjectPage, tempPassword, chosen);
+    await subjectPage.waitForURL((url) => url.pathname === "/");
+    expect((await readUserRow(email))?.mustChangePassword).toBe(false);
+  } finally {
+    await adminContext.close();
+    await subjectContext.close();
   }
 });
+
+// ---------------------------------------------------------------------------
+// tokenVersion revocation, across two live sessions
+// ---------------------------------------------------------------------------
+
+test("@user-lifecycle changing a password revokes the account's OTHER live sessions", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+
+  const email = subjectEmail("revoke");
+  const first = freshPassword("revoke-1");
+  const second = freshPassword("revoke-2");
+
+  const adminContext = await newIsolatedContext(browser);
+  const adminPage = await adminContext.newPage();
+  // Two independent browser contexts for ONE account: the device the user is
+  // sitting at, and the session an attacker is riding.
+  const deviceContext = await newIsolatedContext(browser);
+  const devicePage = await deviceContext.newPage();
+  const otherContext = await newIsolatedContext(browser);
+  const otherPage = await otherContext.newPage();
+
+  try {
+    await loginAs(adminPage, "admin");
+    const { tempPassword } = await createUserViaUi(adminPage, "E2E Revoke", email, "Technician");
+
+    // Both sessions start from the same credential and the same tokenVersion.
+    await loginWith(devicePage, email, tempPassword, { expectPath: "/change-password" });
+    await setNewPassword(devicePage, tempPassword, first);
+    await devicePage.waitForURL((url) => url.pathname === "/");
+
+    await loginWith(otherPage, email, first, { expectPath: "/" });
+    const otherClaims = await decodeSessionCookie(otherContext);
+    const deviceClaims = await decodeSessionCookie(deviceContext);
+    expect(
+      otherClaims.tokenVersion,
+      "both sessions must start on the same generation, or this proves nothing",
+    ).toBe(deviceClaims.tokenVersion);
+
+    // The user changes their password on their own device.
+    await devicePage.goto("/change-password");
+    await setNewPassword(devicePage, first, second);
+    await devicePage.waitForURL((url) => url.pathname === "/");
+
+    // Their own device stays signed in -- the action re-mints a token from the
+    // password they just chose.
+    await devicePage.reload();
+    await expectPathname(devicePage, "/");
+
+    // The other session is dead on its very next request, holding a cookie
+    // that is still perfectly valid, unexpired and correctly signed. Only the
+    // tokenVersion check refuses it.
+    await otherPage.goto("/tickets");
+    await expectPathname(otherPage, "/login");
+
+    // ...and it cannot be revived with the old password either.
+    const refused = await loginExpectingFailure(otherPage, email, first);
+    expect(refused).toBe("Invalid email or password");
+  } finally {
+    await adminContext.close();
+    await deviceContext.close();
+    await otherContext.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Missing-row handling
+// ---------------------------------------------------------------------------
+
+test("@user-lifecycle reactivateUser refuses an id that does not exist", async ({ browser }) => {
+  const email = subjectEmail("p2025");
+
+  const adminContext = await newIsolatedContext(browser);
+  const adminPage = await adminContext.newPage();
+
+  try {
+    await loginAs(adminPage, "admin");
+    await createUserViaUi(adminPage, "E2E P2025", email, "Technician");
+    await adminPage.goto("/admin/users");
+    const { reactivate } = await captureLifecycleCalls(adminPage, email);
+
+    // A user deleted by another admin between the page render and the click is
+    // the ordinary race here, and Prisma raises P2025 for it. The action must
+    // turn that into a message, not a 500 -- and the branch is unreachable
+    // through the UI, which only ever offers ids that were on the page.
+    const response = await invokeAction(
+      adminContext,
+      "/admin/users",
+      reactivate,
+      retargetUserId(reactivate, "e2e-id-that-does-not-exist"),
+    );
+
+    expect(response.result?.error).toBe("User not found");
+    expect(response.status, "a missing row must not be a server error").toBe(200);
+  } finally {
+    await adminContext.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The seeded fixtures
+// ---------------------------------------------------------------------------
+//
+// "The five seeded fixture accounts are untouched" USED TO BE A TEST HERE, and
+// it has moved to e2e/global-teardown.ts. Under `fullyParallel: true` a test
+// cannot be last: Playwright distributes tests across workers, so the guard ran
+// before or during the mutations it was supposed to catch. The global teardown
+// genuinely runs after every worker, compares against a baseline recorded in
+// global setup rather than against a hardcoded expectation, and runs even when
+// a worker was killed. ROLE_CREDENTIALS is still the list of accounts involved;
+// e2e/db.ts's SEEDED_FIXTURES is the list of those accounts and the role the
+// seed gives each of them.

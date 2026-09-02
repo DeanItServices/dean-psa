@@ -102,7 +102,11 @@ verified line references behind each success criterion.*
 - [ ] `getCurrentUser()` performs one indexed lookup and returns database `role` / `isActive` / `mustChangePassword`; an inactive or deleted user resolves to null and is treated as unauthenticated
 - [ ] Guard rails hold: an admin cannot deactivate or demote themselves, and at least one active admin always remains
 - [ ] `/change-password` lives at `(auth)/change-password` (outside the `(dashboard)` gate that redirects to it) and clears `mustChangePassword` on success
-- [ ] `npm run bootstrap:admin` creates the first real admin, retiring `ALLOW_SEED_IN_PRODUCTION` as the documented path
+- [ ] `npm run bootstrap:admin` creates the first real admin (explicitly `role: "admin"`, password validated against the shared minimum), retiring `ALLOW_SEED_IN_PRODUCTION` as the documented path, with an explicit `--reset-password` break-glass for a locked-out sole admin
+- [ ] `authorize()` also refuses inactive users, so deactivation cannot be bypassed by simply logging in again for a fresh JWT — and every failure path still returns an identical null, preserving the anti-enumeration property
+- [ ] `requireRole()` itself enforces `mustChangePassword`, so a holder of an intercepted temp password cannot invoke Server Actions; `/api/qbo/connect`, which cannot call `requireRole()`, carries its own equivalent check
+- [ ] `resetUserPassword` refuses a self-target, so no admin can strand themselves
+- [ ] Phase 7's behavioural claims are executable in `e2e/user-lifecycle.spec.ts` and pass, and the merged tree passes `prisma generate`, `tsc --noEmit` and `lint`
 **Plans**: 7
 
 ### Phase 8: Deployment Hardening

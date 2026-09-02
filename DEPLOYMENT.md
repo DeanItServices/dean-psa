@@ -251,11 +251,19 @@ Then run the suite:
 npm run test:e2e
 ```
 
-This runs `playwright test`, which (per `playwright.config.ts`) starts its own `npm run dev` server against `http://localhost:3000` and runs against whatever database that dev server is connected to. **Treat this as a pre-deployment or staging verification step, not something to run directly against a live production database** — the specs create their own throwaway companies/contracts/tickets (with unique timestamp-suffixed names) as part of each test, and while they are additive-only (no cleanup step deletes this data), running them against production would leave test data behind. Recommended usage: run `npm run test:e2e` against a staging instance (or a local clone pointed at a disposable database) before promoting a build to production, and periodically thereafter as a regression check.
+`npm run test:e2e` runs the **gate** projects (`lifecycle` + `last-active-admin`). Per `playwright.config.ts` it starts its own `next dev` on port **3100** (override with `E2E_PORT`) — it will not reuse a server already listening, and a build-identity check in `e2e/global-setup.ts` aborts the run if the server answering is not built from the current source. That check exists because an earlier configuration silently graded a stale container image.
 
-Two known gaps in current E2E coverage, both intentional and documented in the specs themselves, not defects in this runbook:
-- `e2e/tickets.spec.ts` has two `test.fixme` placeholders for the ownership-scoped delete behavior (see "Operational notes" below) — there is currently no delete button anywhere in the UI to drive that test through, so it cannot be exercised end-to-end yet.
-- E2E test execution itself (`npx playwright test` actually passing against a live server) had not been run as part of any Phase 6 plan at the time each spec was written — each plan verified only that the spec type-checks (`npx tsc --noEmit`). Running `npm run test:e2e` for the first time against a real environment, per this section, is the first actual execution of these specs and should be treated as a verification step to perform before considering the suite "proven," not an already-confirmed-passing gate.
+> **This suite is for a local development database only. Do not point it at staging or production.**
+>
+> `e2e/global-setup.ts` and `e2e/global-teardown.ts` **delete** rows matching `e2e-lifecycle-%@e2e.invalid`, and require the five `*@mspdemo.local` seed accounts to exist — a database bootstrapped with `npm run bootstrap:admin` has none of them, so teardown will fail with a message about fixture accounts that names the wrong cause. Run this against a database seeded by `npm run db:seed`, on a machine you are developing on.
+>
+> For a pre-promotion check against staging, exercise the flows by hand using the onboarding steps above rather than running this suite.
+
+`npm run test:e2e:advisory` runs the three pre-Phase-7 specs separately. They are **expected to fail today** — they had never been executed against a browser until Phase 7, and ROADMAP Phase 9 owns their first real run and fixing what breaks. They are kept out of `test:e2e` deliberately: Playwright's exit code is per-process, not per-project, so including them would make the gate permanently red and destroy its signal. `npm run test:e2e:all` runs everything if you want the full picture.
+
+Known gaps, intentional and documented in the specs themselves:
+- `e2e/tickets.spec.ts` has two `test.fixme` placeholders for ownership-scoped delete — there is no delete button in the UI to drive them through. Phase 9.
+- `scripts/create-admin.ts` has no automated test: it is gated on an interactive TTY, so it cannot be driven by the suite as written. Its behaviour is evidenced only by a manual transcript.
 
 ---
 

@@ -131,7 +131,7 @@ function cleanupStaleEntries(now: number) {
  * function; the fix is infrastructure (add a reverse proxy that owns these
  * headers), not application code.
  */
-function getClientIp(request: NextRequest): string {
+function getClientIp(request: NextRequest): string | null {
   const forwardedFor = request.headers.get("x-forwarded-for");
   if (forwardedFor) {
     return forwardedFor.split(",")[0]!.trim();
@@ -142,7 +142,10 @@ function getClientIp(request: NextRequest): string {
     return realIp.trim();
   }
 
-  return "unknown";
+  // null, NOT a shared "unknown" key. The caller skips rate limiting entirely
+  // for an unidentifiable client -- see the block comment at that call site for
+  // the measured denial of service a shared bucket produced.
+  return null;
 }
 
 /**
@@ -214,6 +217,38 @@ export default function middleware(request: NextRequest, event: NextFetchEvent) 
 
   const ip = getClientIp(request);
   const useAuthLimit = isAuthRoute || isCredentialAttempt;
+
+  // WHY AN UNIDENTIFIABLE CLIENT IS NOT RATE LIMITED
+  //
+  // getClientIp() returns null when neither x-forwarded-for nor x-real-ip is
+  // present. It previously fell back to the literal key "unknown", so every
+  // such client would share ONE bucket.
+  //
+  // That was survivable while the tight bucket covered only /api/auth/*, which
+  // this app never uses for login. Once POST /login joined that bucket, a
+  // shared key would mean 10 requests per minute from anyone could lock every
+  // user out of signing in.
+  //
+  // MEASURED, so the reasoning is not left hanging: on Next 16's dev server a
+  // header is in fact always present, so this null branch does not fire and
+  // bucketing is per source address (15 requests with distinct
+  // x-forwarded-for values all passed; requests sharing a source correctly
+  // shared a bucket). The shared-key hazard is therefore latent, not live --
+  // it depends on a deployment where nothing upstream supplies either header,
+  // which has NOT been observed here and is unverified for the Compose
+  // topology.
+  //
+  // The branch stays because the failure mode it prevents is severe and the
+  // cost is nil: counting an unidentifiable client cannot deter an attacker
+  // (who spoofs a fresh x-forwarded-for per request and lands in a fresh
+  // bucket anyway) while it could lock out everyone else. Skipping is the
+  // safer default until Phase 8's reverse proxy makes the header trustworthy
+  // -- the same infrastructure fix getClientIp()'s trust-boundary warning
+  // above has always named. Do not restore a shared fallback key.
+  if (ip === null) {
+    return handleAfterRateLimit();
+  }
+
   const limit = useAuthLimit ? AUTH_RATE_LIMIT : GENERAL_RATE_LIMIT;
   const rateLimitKey = useAuthLimit ? `auth:${ip}` : `general:${ip}`;
 
@@ -221,6 +256,10 @@ export default function middleware(request: NextRequest, event: NextFetchEvent) 
   if (retryAfter !== null) {
     return rateLimited(retryAfter);
   }
+
+  return handleAfterRateLimit();
+
+  function handleAfterRateLimit() {
 
   if (isAuthRoute || isLoginRoute) {
     return NextResponse.next();
@@ -243,7 +282,8 @@ export default function middleware(request: NextRequest, event: NextFetchEvent) 
     ev: NextFetchEvent,
   ) => ReturnType<import("next/server").NextMiddleware>;
 
-  return authAsMiddleware(request, event);
+    return authAsMiddleware(request, event);
+  }
 }
 
 export const config = {

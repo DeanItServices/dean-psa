@@ -1,5 +1,6 @@
 "use server";
 
+import { z } from "zod";
 import { compare, hash } from "bcryptjs";
 import { signIn } from "@/auth";
 import { db } from "@/lib/db";
@@ -84,23 +85,41 @@ export async function changePasswordAction(
     return { error: "Your session has expired. Please sign in again." };
   }
 
-  const currentPassword = options?.currentPassword;
+  // Parsed, not hand-checked. A Server Action accepts arbitrary JSON off the
+  // wire, so these arguments are NOT guaranteed to be strings just because the
+  // signature says so. The previous `newPassword.length < MIN_PASSWORD_LENGTH`
+  // was skippable by sending a JSON number: `undefined < 12` is false, so the
+  // floor did not apply and execution reached bcrypt, which threw an unhandled
+  // 500. Fail-closed, but the check was bypassable at its own line.
+  // The message is set on BOTH the type error and the length error. zod's
+  // `.min(n, msg)` only fires when the value already IS a string; an absent or
+  // non-string value raises invalid_type instead and would surface zod's own
+  // "expected string, received undefined" to the user. These are user-facing
+  // strings on the login-adjacent path, so they must not leak parser internals.
+  const missingCurrent = "Enter your current password.";
+  const tooShort = `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`;
 
-  if (!currentPassword) {
-    return { error: "Enter your current password." };
+  const parsed = z
+    .object({
+      currentPassword: z
+        .string({ error: missingCurrent })
+        .min(1, missingCurrent),
+      newPassword: z.string({ error: tooShort }).min(MIN_PASSWORD_LENGTH, tooShort),
+      confirmPassword: z.string({ error: "Passwords do not match." }),
+    })
+    .safeParse({
+      currentPassword: options?.currentPassword,
+      newPassword,
+      confirmPassword,
+    });
+
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Invalid input." };
   }
 
-  if (!newPassword) {
-    return { error: "Enter a new password." };
-  }
+  const { currentPassword } = parsed.data;
 
-  if (newPassword.length < MIN_PASSWORD_LENGTH) {
-    return {
-      error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`,
-    };
-  }
-
-  if (newPassword !== confirmPassword) {
+  if (parsed.data.newPassword !== parsed.data.confirmPassword) {
     return { error: "Passwords do not match." };
   }
 

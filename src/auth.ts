@@ -16,13 +16,16 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   ...authConfig,
   session: {
     strategy: "jwt",
-    // Shortened from Auth.js's 30-day default. Because JWT sessions are
-    // self-contained (no adapter-backed session store), there is no
-    // server-side mechanism to revoke a token early -- a leaked JWT, or one
-    // issued to a technician who is later offboarded, otherwise stays valid
-    // for the full maxAge. 8 hours bounds that exposure window to roughly
-    // one business day while still avoiding constant re-logins for an
-    // internal tool.
+    // Shortened from Auth.js's 30-day default. KEPT AT 8 HOURS, revisited
+    // deliberately: revocation is no longer impossible. getCurrentUser()
+    // (src/lib/session.ts) now re-reads the user row on every request, so an
+    // offboarded technician is refused on their next request rather than at
+    // the end of maxAge, and authorize() below refuses them a fresh token.
+    // maxAge is therefore no longer the revocation mechanism -- but it is
+    // still the bound on the one case the database check cannot see: a JWT
+    // stolen from a user nobody has deactivated, which stays replayable
+    // until it expires. 8 hours keeps that window to roughly one business
+    // day while avoiding constant re-logins for an internal tool.
     maxAge: 60 * 60 * 8,
   },
   providers: [
@@ -52,11 +55,19 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         });
 
         // SECURITY: Do not distinguish "user not found" from "user has no
-        // password set" (e.g. an OAuth-only account) from "wrong password".
-        // Every failure path below returns null identically so the caller
-        // (and any error message surfaced to the client) cannot be used to
-        // enumerate valid account emails.
-        if (!user || !user.hashedPassword) {
+        // password set" (e.g. an OAuth-only account) from "deactivated" from
+        // "wrong password". Every failure path below returns null
+        // identically -- same value, same absence of a message, same absence
+        // of a log line -- so neither the caller nor any error surfaced to
+        // the client can be used to enumerate valid account emails or to
+        // tell a deactivated account from one that never existed.
+        //
+        // isActive is checked HERE rather than after the password compare so
+        // that a deactivated account is indistinguishable from a nonexistent
+        // one by response timing too (both skip bcrypt). Without this check
+        // deactivation would be trivially bypassable: the offboarded user
+        // simply logs in again and mints a fresh 8-hour JWT.
+        if (!user || !user.hashedPassword || !user.isActive) {
           return null;
         }
 

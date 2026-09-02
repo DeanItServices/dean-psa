@@ -46,6 +46,12 @@ export const ROLE_CREDENTIALS: Record<
  * `/login` -- `waitForURL` will then time out per Playwright's default
  * action timeout, surfacing a clear test failure. No custom
  * infinite-retry loop is added.
+ *
+ * The landing pathname is then asserted to be exactly `/`. A weaker
+ * "left /login" check is also satisfied by `/change-password`, where a
+ * seeded account carrying `mustChangePassword` is now redirected -- the
+ * helper would resolve "successfully" and every downstream spec would fail
+ * with an unrelated locator timeout instead of naming the real cause.
  */
 export async function loginAs(
   page: Page,
@@ -58,5 +64,17 @@ export async function loginAs(
   await page.locator("#password").fill(password);
   await page.getByRole("button", { name: "Sign in" }).click();
 
-  await page.waitForURL((url) => !url.pathname.includes("/login"));
+  await page.waitForURL((url) => url.pathname !== "/login");
+
+  const pathname = new URL(page.url()).pathname;
+
+  if (pathname !== "/") {
+    throw new Error(
+      `loginAs("${role}") expected to land on "/" after sign-in but landed on "${pathname}".` +
+        (pathname === "/change-password"
+          ? ` The seeded ${email} account has mustChangePassword set;` +
+            ` re-run \`npm run db:seed\` (prisma/seed.ts sets isActive/mustChangePassword explicitly).`
+          : ""),
+    );
+  }
 }

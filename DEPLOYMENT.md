@@ -104,9 +104,10 @@ You should see three services: `app` (the Next.js web application, port 3000), `
 
 ```bash
 npm install
+npx prisma generate
 ```
 
-Skipping this step produces `sh: 1: prisma: not found` (or an equivalent "command not found" for other host-side scripts) since `node_modules/.bin` won't exist yet.
+Skipping `npm install` produces `sh: 1: prisma: not found` (or an equivalent "command not found" for other host-side scripts) since `node_modules/.bin` won't exist yet. Skipping `npx prisma generate` produces `Error: Cannot find module '.prisma/client/default'` the first time any script imports `@prisma/client` (e.g. `prisma db seed`) — `npm install` alone does not generate the Prisma client on this project; only the Docker build's explicit `RUN npx prisma generate` step does that automatically, so host-side tooling needs the same command run manually once.
 
 Then run the migration script against the running `db` service:
 

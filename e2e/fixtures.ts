@@ -78,3 +78,73 @@ export async function loginAs(
     );
   }
 }
+
+/**
+ * Logs `page` in with EXPLICIT credentials and asserts the landing pathname,
+ * for accounts a spec creates itself rather than the five seeded fixtures.
+ *
+ * WHY THIS EXISTS ALONGSIDE `loginAs` RATHER THAN REPLACING IT. `loginAs`
+ * asserts the post-login pathname is exactly `/`. That is correct for the
+ * seeded accounts and is the assertion that turns a broken seed into a named
+ * failure instead of an unrelated locator timeout three steps downstream. A
+ * user created through /admin/users carries `mustChangePassword: true`, so
+ * the (dashboard) layout bounces them to `/change-password` and they will
+ * never reach `/`. Weakening `loginAs` to accommodate that would delete a
+ * real guard rail from three other specs to serve this one; a second helper
+ * carrying an explicit expectation does not.
+ *
+ * Uses the same real, source-confirmed selectors as `loginAs`
+ * (src/app/(auth)/login/page.tsx): `#email`, `#password`, and the submit
+ * button whose accessible name is "Sign in".
+ *
+ * @param options.expectPath the pathname login must land on. Defaults to
+ *   `/`. Pass `"/change-password"` for an account holding a temporary
+ *   password.
+ */
+export async function loginWith(
+  page: Page,
+  email: string,
+  password: string,
+  options: { expectPath?: string } = {},
+): Promise<void> {
+  const expectPath = options.expectPath ?? "/";
+
+  await page.goto("/login");
+  await page.locator("#email").fill(email);
+  await page.locator("#password").fill(password);
+  await page.getByRole("button", { name: "Sign in" }).click();
+
+  await page.waitForURL((url) => url.pathname === expectPath);
+}
+
+/**
+ * Attempts a login that is EXPECTED TO FAIL and returns the visible message.
+ *
+ * The page stays on `/login` and renders the failure in a `role="alert"`
+ * paragraph (src/app/(auth)/login/page.tsx). Returning the text rather than
+ * asserting one specific string here is deliberate: it lets a caller compare
+ * two different failure CAUSES against each other, which is exactly the
+ * property under test when the requirement is that a deactivated account and
+ * a wrong password are indistinguishable (src/auth.ts's `authorize()`
+ * returns an identical `null` on every failure path so accounts cannot be
+ * enumerated).
+ */
+export async function loginExpectingFailure(
+  page: Page,
+  email: string,
+  password: string,
+): Promise<string> {
+  await page.goto("/login");
+  await page.locator("#email").fill(email);
+  await page.locator("#password").fill(password);
+  await page.getByRole("button", { name: "Sign in" }).click();
+
+  // Scoped to the form's own `<p role="alert">`, NOT `getByRole("alert")`:
+  // Next.js renders a permanent `<div role="alert" id="__next-route-announcer__">`
+  // on every page, which is present and technically visible with empty text.
+  // Matching it returned "" instead of the login error -- observed directly.
+  const alert = page.locator('p[role="alert"]');
+  await alert.waitFor({ state: "visible" });
+
+  return ((await alert.textContent()) ?? "").trim();
+}

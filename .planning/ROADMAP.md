@@ -8,6 +8,9 @@
 - [x] Phase 4: Time Tracking & Billing (6 plans) — Complete
 - [x] Phase 5: Reporting & Dashboards (4 plans) — Complete
 - [x] Phase 6: Polish & Launch Prep (9 plans) — Complete
+- [ ] Phase 7: Account Management & Session Freshness (5 plans)
+- [ ] Phase 8: Deployment Hardening (4 plans)
+- [ ] Phase 9: Verification & Debt Closure (3 plans)
 
 ## Phase Details
 
@@ -81,6 +84,52 @@
 - [x] **CRITICAL (carried forward from Phase 4 review)**: QuickBooksConnection's OAuth access/refresh tokens are encrypted at the application layer before being written to the database — AES-256-GCM via `src/lib/crypto.ts`, wired into `src/lib/qbo.ts` and `src/app/api/qbo/callback/route.ts` (06-01)
 **Plans**: 9
 
+---
+
+*Phases 7-9 form the **Launch Readiness (v1 Go-Live)** milestone. Source:
+`.planning/explorations/2026-09-02-launch-readiness-design.md` — read it before planning
+any of these phases; it carries the decisions, the rejected alternatives, and the
+verified line references behind each success criterion.*
+
+### Phase 7: Account Management & Session Freshness
+**Goal**: Let an admin onboard and offboard real MSP staff from the UI, with deactivations and role changes taking effect immediately rather than up to 8 hours later.
+**Requirements**: Role-based access control (extends the Phase 1 requirement — the admin-facing half was never built)
+**Recommended Agents**: engineering-backend-architect, engineering-frontend-developer, engineering-security-engineer
+**Success Criteria**:
+- [ ] Additive migration adds `User.isActive` (default true) and `User.mustChangePassword` (default false); `prisma/seed.ts` sets both explicitly so the E2E login fixture keeps working
+- [ ] `/admin/users` exists, gated on the already-wired `admin:manage_users` permission and linked from the sidebar's Admin section, supporting create / edit-role / reset-password / deactivate / reactivate
+- [ ] New-user creation lowercase-normalizes email to match `authorize()`, and shows the generated temp password exactly once without logging it
+- [ ] `getCurrentUser()` performs one indexed lookup and returns database `role` / `isActive` / `mustChangePassword`; an inactive or deleted user resolves to null and is treated as unauthenticated
+- [ ] Guard rails hold: an admin cannot deactivate or demote themselves, and at least one active admin always remains
+- [ ] `/change-password` lives at `(auth)/change-password` (outside the `(dashboard)` gate that redirects to it) and clears `mustChangePassword` on success
+- [ ] `npm run bootstrap:admin` creates the first real admin, retiring `ALLOW_SEED_IN_PRODUCTION` as the documented path
+**Plans**: 5
+
+### Phase 8: Deployment Hardening
+**Goal**: Make the self-hosted deployment safe to expose — real TLS, a reverse proxy that makes the existing rate limiter meaningful, and no default credentials.
+**Requirements**: Cross-cutting deployment security (no new product requirements — hardens the Phase 6 deployment story)
+**Recommended Agents**: infrastructure-devops-engineer, engineering-security-engineer, engineering-backend-architect
+**Success Criteria**:
+- [ ] `src/middleware.ts` is migrated to `src/proxy.ts` (Next.js 16 deprecated the middleware convention; Proxy runs on the Node runtime and cannot be configured back to Edge), the export is renamed to `proxy`, and `tsc --noEmit` passes — re-verify the `authAsMiddleware` overload cast rather than copying it blindly
+- [ ] Rate-limit window and thresholds are read from `process.env` with the current values (60s / 60 / 10) as defaults, genuinely runtime-read now that the file is Node-runtime
+- [ ] A Caddy service fronts the app with HTTP-01 automatic TLS; `app` no longer publishes 3000 to the host and is reachable only on the internal Compose network
+- [ ] `getClientIp()` is trustworthy because Caddy overwrites `X-Forwarded-For` — the trust-boundary warning in the file is updated to say the boundary is now enforced
+- [ ] Default `postgres:postgres` credentials are replaced with generated secrets from `.env` in all three places (`db.POSTGRES_PASSWORD`, `app.DATABASE_URL`, `email-poller.DATABASE_URL`) and the host-published `db` port is removed
+- [ ] `DEPLOYMENT.md` and `.env.example` reflect the new topology, including that `POSTGRES_PASSWORD` applies only at initdb so an existing volume needs `ALTER USER`
+**Plans**: 4
+
+### Phase 9: Verification & Debt Closure
+**Goal**: Run the E2E suite against a real browser for the first time and close the three known debt items carried out of Phases 4 and 6.
+**Requirements**: Cross-cutting quality (no new product requirements — closes documented debt)
+**Recommended Agents**: testing-qa-verification-specialist, engineering-backend-architect, engineering-frontend-developer
+**Success Criteria**:
+- [ ] `npm run test:e2e` executes against a real browser and passes; any failures caused by `fullyParallel: true` sharing the dev database are recorded explicitly, so the separate-test-database decision can be made on evidence
+- [ ] Ticket delete is admin-only and **refuses when any of the ticket's time entries has a non-null `invoiceLineItemId`**, returning an error naming the invoice — `TimeEntry.ticket` is `onDelete: Cascade` (`prisma/schema.prisma:265`) while `TimeEntry.invoiceLineItem` is `SetNull`, so an unguarded delete destroys billed time and leaves the line item that billed it
+- [ ] A confirmation dialog wires the ticket detail page to `deleteTicket`, and the two `test.fixme` cases in `e2e/tickets.spec.ts` are rewritten as admin/non-admin and invoiced-time cases
+- [ ] `deleteTicket`'s docstring names the `TimeEntry` cascade, not just `TicketComment`
+- [ ] The hardcoded QBO `ItemRef.value: "1"` (`src/lib/actions/invoices.ts:367`) is replaced by a connection-level default item chosen from a live QBO item list on `/admin/quickbooks`; the item-list endpoint is verified against the real company or a sandbox first
+**Plans**: 3
+
 ## Progress
 
 | Phase | Plans | Completed | Status |
@@ -91,3 +140,6 @@
 | Phase 4: Time Tracking & Billing | 6 | 6 | Complete |
 | Phase 5: Reporting & Dashboards | 4 | 4 | Complete |
 | Phase 6: Polish & Launch Prep | 9 | 9 | Complete |
+| Phase 7: Account Management & Session Freshness | 5 | 0 | Pending |
+| Phase 8: Deployment Hardening | 4 | 0 | Pending |
+| Phase 9: Verification & Debt Closure | 3 | 0 | Pending |

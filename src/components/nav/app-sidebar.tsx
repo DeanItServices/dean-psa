@@ -14,7 +14,7 @@ export function AppSidebar({ role }: { role: Role }) {
   return (
     <nav
       aria-label="Primary"
-      className="flex h-full w-56 shrink-0 flex-col gap-1 border-r bg-sidebar p-4"
+      className="flex w-56 shrink-0 flex-col gap-1 border-r bg-sidebar p-4"
     >
       <div className="px-2 pb-2 text-sm font-semibold text-sidebar-foreground">
         MSP PSA

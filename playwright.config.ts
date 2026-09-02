@@ -25,7 +25,27 @@ import { E2E_BASE_URL, E2E_PORT, E2E_SERVER_IS_EXTERNAL } from "./e2e/target";
  *
  * PROJECTS, AND WHY THEY ARE NOT COSMETIC.
  *
- *   lifecycle  -- Phase 7's blocking gate (@user-lifecycle).
+ *   lifecycle  -- Phase 7's blocking gate (@user-lifecycle). THREE files:
+ *                 user-lifecycle.spec.ts, bootstrap-admin.spec.ts and
+ *                 harness.spec.ts (which tests this suite's own two
+ *                 silent-wrong-answer helpers, and so belongs to the run whose
+ *                 conclusions they decide).
+ *
+ *                 WHY BOOTSTRAP LIVES HERE AND NOT IN A PROJECT OF ITS OWN,
+ *                 which is the shape that would otherwise be tidier. It creates
+ *                 ADMIN accounts with real passwords, briefly, exactly as
+ *                 user-lifecycle.spec.ts does -- and `last-active-admin` below
+ *                 is only correct while the seeded admin is the ONLY admin who
+ *                 can still log in. That is guaranteed by its
+ *                 `dependencies: ["lifecycle"]`, which waits for this whole
+ *                 project. A separate project would run CONCURRENTLY with
+ *                 last-active-admin and break its precondition -- silently, as
+ *                 a "the guard rail did not fire" failure in a spec with
+ *                 nothing to do with the cause.
+ *
+ *                 It is also why the testMatch is a two-file alternation rather
+ *                 than a directory: adding a spec to this project is a decision
+ *                 about admin accounts, not a filename convention.
  *   advisory   -- the three pre-Phase-7 specs. They have never been run against
  *                 a browser; ROADMAP Phase 9 owns their first real run and
  *                 fixing what breaks. They are evidence here, not a gate, and
@@ -52,7 +72,7 @@ export default defineConfig({
   projects: [
     {
       name: "lifecycle",
-      testMatch: /user-lifecycle\.spec\.ts$/,
+      testMatch: /(user-lifecycle|bootstrap-admin|harness)\.spec\.ts$/,
     },
     {
       name: "advisory",

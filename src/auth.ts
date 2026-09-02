@@ -111,10 +111,22 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       return token;
     },
     session: async ({ session, token }) => {
+      // WHAT GOES ON `session` GOES ON THE WIRE. This object is what
+      // NextAuth's own handlers serve from GET /api/auth/session -- a route
+      // that is exempt from the middleware session gate and never consults
+      // getCurrentUser(), so it answers for tokens getCurrentUser() refuses
+      // (revoked, or belonging to a deactivated user).
+      //
+      // tokenVersion is therefore deliberately NOT copied here, and is absent
+      // from the `Session` augmentation in types/next-auth.d.ts so it cannot
+      // be re-added by accident. getCurrentUser() reads it from the raw JWT
+      // instead (src/lib/session.ts). Leaving it here would have published a
+      // password-rotation counter to any client and confirmed that a refused
+      // token is still signature-valid -- and the first useSession() anyone
+      // added would have bypassed every database check.
       if (session.user) {
         session.user.id = token.id as string;
         session.user.role = token.role as typeof session.user.role;
-        session.user.tokenVersion = token.tokenVersion;
       }
       return session;
     },

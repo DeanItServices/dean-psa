@@ -1,7 +1,9 @@
 import type { Role } from "@prisma/client";
 import { cache } from "react";
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { auth } from "@/auth";
+import { getToken } from "next-auth/jwt";
+import type { JWT } from "next-auth/jwt";
 import { db } from "@/lib/db";
 
 /**
@@ -33,6 +35,77 @@ const findSessionUser = cache(async (id: string) => {
 });
 
 /**
+ * The decryption secret list, assembled exactly the way @auth/core assembles
+ * it from the environment (its setEnvDefaults pushes AUTH_SECRET, then
+ * unshifts AUTH_SECRET_1..3): the rotation slots first, then the current
+ * AUTH_SECRET, so a token minted under any live secret still decodes.
+ * Reproduced rather than imported because @auth/core applies it to a config
+ * object we have no handle on from here.
+ *
+ * Throws rather than returning an empty list. With no secret the token cannot
+ * be decoded at all, which would resolve every caller to null and read as
+ * "the whole application silently logged out" -- exactly the misdiagnosis the
+ * fail-closed note below exists to prevent. Auth.js itself refuses to run in
+ * this state, so this can only fire on a misconfigured deployment.
+ */
+function sessionSecrets(): string[] {
+  const secrets = [
+    process.env.AUTH_SECRET_3,
+    process.env.AUTH_SECRET_2,
+    process.env.AUTH_SECRET_1,
+    process.env.AUTH_SECRET,
+  ].filter((secret): secret is string => typeof secret === "string" && secret.length > 0);
+
+  if (secrets.length === 0) {
+    throw new Error(
+      "AUTH_SECRET is not set, so the session cookie cannot be decoded. " +
+        "Set it in the environment (see .env.example) and restart.",
+    );
+  }
+
+  return secrets;
+}
+
+/**
+ * Decodes THIS request's session JWT straight from the cookie.
+ *
+ * WHY NOT auth(). auth() returns the `Session` object produced by the session
+ * callback in src/auth.ts -- and that same object is what NextAuth serves to
+ * the browser from GET /api/auth/session. Anything this function needs that
+ * had to be copied onto `Session` to be readable here would therefore also be
+ * readable by any client, whether or not the app ever calls useSession(). The
+ * revocation claim in particular must not be: it is a password-rotation
+ * counter, and /api/auth/session is exempt from the middleware session gate
+ * and never consults this module, so it would answer for a token this module
+ * refuses. Reading the raw token keeps the claim server-side, and keeps `id`
+ * and `tokenVersion` sourced from one place -- the same cookie, decoded once.
+ *
+ * COOKIE NAME. Auth.js names the session cookie `authjs.session-token`, or
+ * `__Secure-authjs.session-token` when it decides the deployment is HTTPS
+ * (@auth/core's init.js: `config.useSecureCookies ?? url.protocol ===
+ * "https:"`, where the URL comes from AUTH_URL or the forwarded-proto
+ * header). Rather than re-deriving that decision -- which would silently log
+ * every user out if a library upgrade changed it -- both names are tried, in
+ * that order. The two cannot be confused: the salt Auth.js encrypts with IS
+ * the cookie name, so a token only decodes under the name it was stored as,
+ * and a `__Secure-` cookie is never sent over plaintext HTTP at all. Secure
+ * first, so a stale unprefixed cookie left over from an http deployment
+ * cannot shadow the live one after TLS is turned on.
+ *
+ * Request-scoped via cache() for the same reason findSessionUser is: several
+ * getCurrentUser() calls per render must not each pay for a JWE decrypt.
+ */
+const readSessionToken = cache(async (): Promise<JWT | null> => {
+  const req = { headers: await headers() };
+  const secret = sessionSecrets();
+
+  return (
+    (await getToken({ req, secret, secureCookie: true })) ??
+    (await getToken({ req, secret, secureCookie: false }))
+  );
+});
+
+/**
  * Returns the currently authenticated user, or null.
  *
  * The session is a self-contained signed JWT (no server-side session store --
@@ -58,7 +131,15 @@ const findSessionUser = cache(async (id: string) => {
  * So every JWT carries the `tokenVersion` that was current when it was minted
  * (src/auth.ts's authorize + jwt callback), and every request compares it
  * against the live column. Any write that increments the column invalidates
- * every token issued before it.
+ * every token issued before it. The claim is stamped ONCE, at sign-in, and is
+ * never refreshed from the database -- that frozen-at-mint property is the
+ * whole mechanism, so neither this function nor the jwt callback may re-read
+ * it.
+ *
+ * The claim is read from the RAW TOKEN (readSessionToken above), never from
+ * the `Session` object, and it is deliberately absent from the `Session` type
+ * augmentation -- see readSessionToken's comment for why a claim on `Session`
+ * is a claim on the wire.
  *
  * A token with NO tokenVersion claim -- one minted by a build that predates
  * this mechanism -- is refused, deliberately. It cannot be distinguished from
@@ -75,22 +156,25 @@ const findSessionUser = cache(async (id: string) => {
  * downstream grants access) and it is legible: a database outage, or a P2022
  * raised because the isActive/mustChangePassword/tokenVersion migration has
  * not been applied to this environment, surfaces as an error instead of
- * masquerading as every user being silently logged out.
+ * masquerading as every user being silently logged out. A cookie that is
+ * absent, expired, or fails to decrypt is not an error but an
+ * unauthenticated request: getToken() resolves it to null and the id check
+ * below refuses it.
  *
- * This performs a Prisma query and calls the full auth() instance, so this
- * module is strictly Node-runtime: use it from Server Components, Server
- * Actions and Route Handlers only -- never from Edge middleware.
+ * This performs a Prisma query and reads the request headers, so this module
+ * is strictly Node-runtime: use it from Server Components, Server Actions and
+ * Route Handlers only -- never from Edge middleware.
  */
 export async function getCurrentUser() {
-  const session = await auth();
-  const id = session?.user?.id;
+  const token = await readSessionToken();
+  const id = token?.id;
 
   // Reject anything that is not a usable id before touching the database.
   if (typeof id !== "string" || id.length === 0) {
     return null;
   }
 
-  const tokenVersion = session?.user?.tokenVersion;
+  const tokenVersion = token?.tokenVersion;
 
   const user = await findSessionUser(id);
 

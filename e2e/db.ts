@@ -1,7 +1,9 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
+import { E2E_SERVER_IS_EXTERNAL } from "./target";
 
 /**
  * Database access for the E2E suite: the specs, and the global setup/teardown
@@ -63,12 +65,72 @@ export const E2E_EMAIL_PREFIX = "e2e-lifecycle-";
 export const E2E_EMAIL_DOMAIN = "@e2e.invalid";
 export const E2E_EMAIL_LIKE = `${E2E_EMAIL_PREFIX}%${E2E_EMAIL_DOMAIN}`;
 
+/**
+ * The database this suite reads and writes -- and the coupling that makes it
+ * NOT independent of which server the browser drives.
+ *
+ * E2E_BASE_URL retargets the SERVER (e2e/target.ts). It does not retarget this
+ * process: DATABASE_URL is read from the runner's own environment or from the
+ * `.env` in this working tree, so with E2E_BASE_URL pointed at a container or a
+ * staging box the browser drives one system while every `readUserRow`, the
+ * orphan sweep and the fixture baseline/diff hit another. Nothing in the
+ * results would say so. Concretely that produces:
+ *
+ *   - assertions that read a row the server under test never wrote (a created
+ *     user is "missing", a tokenVersion never moves);
+ *   - a sweep and a per-spec teardown that delete accounts out of the LOCAL
+ *     database while leaving the live ones on the target -- active accounts
+ *     with known-shaped passwords, which is the exact hazard sweepE2eAccounts
+ *     exists to remove;
+ *   - a fixture diff that certifies the wrong five rows.
+ *
+ * So the second target is EXPLICIT rather than inferred: naming a foreign
+ * server means naming its database too. There is nothing useful to guess --
+ * the whole point of the E2E_BASE_URL hatch is that the caller knows something
+ * this process cannot.
+ *
+ * AUTH_SECRET is coupled the same way and is deliberately NOT resolved here: it
+ * is read through envValue() at its point of use, and a mismatch already
+ * surfaces with its own message ("the session cookie must decode with
+ * AUTH_SECRET"). Export it alongside E2E_DATABASE_URL when the foreign server
+ * signs with a different secret.
+ */
+export const E2E_DATABASE_URL_ENV = "E2E_DATABASE_URL";
+
+export function resolveE2eDatabaseUrl(): string {
+  if (!E2E_SERVER_IS_EXTERNAL) {
+    return envValue("DATABASE_URL");
+  }
+
+  const explicit = process.env[E2E_DATABASE_URL_ENV];
+  if (explicit && explicit.trim().length > 0) {
+    return explicit;
+  }
+
+  throw new Error(
+    [
+      "E2E_BASE_URL is set, so this run grades a server this process did not start --",
+      `but ${E2E_DATABASE_URL_ENV} is not set, and this suite's database access would`,
+      "fall back to DATABASE_URL from this working tree's .env.",
+      "",
+      "The browser would drive one system while every row read, the orphan sweep and",
+      "the seeded-fixture baseline/diff hit another. Every database-backed assertion",
+      "here would be reporting on the wrong database, and the sweep would delete local",
+      "accounts while leaving live ones on the target.",
+      "",
+      `Fix: export ${E2E_DATABASE_URL_ENV} pointing at the database the server behind`,
+      "E2E_BASE_URL actually uses (and AUTH_SECRET too, if it signs with a different",
+      "secret). Unset E2E_BASE_URL to go back to the managed local server.",
+    ].join("\n"),
+  );
+}
+
 let client: PrismaClient | null = null;
 
 /** Lazily-constructed Prisma client for the runner process. */
 export function prisma(): PrismaClient {
   client ??= new PrismaClient({
-    adapter: new PrismaPg({ connectionString: envValue("DATABASE_URL") }),
+    adapter: new PrismaPg({ connectionString: resolveE2eDatabaseUrl() }),
   });
   return client;
 }
@@ -107,7 +169,9 @@ export async function sweepE2eAccounts(): Promise<number> {
   return count;
 }
 
-/** The five seeded fixture accounts, as prisma/seed.ts writes them. */
+/**
+ * The five seeded fixture accounts, and the role prisma/seed.ts gives each.
+ */
 export const SEEDED_FIXTURES = [
   { email: "technician@mspdemo.local", role: "technician" },
   { email: "dispatcher@mspdemo.local", role: "dispatcher" },
@@ -162,8 +226,131 @@ export async function readFixtureSnapshot(): Promise<FixtureSnapshot> {
   return snapshot;
 }
 
-/** Where the pre-run fixture baseline is parked between the two global hooks. */
-export const FIXTURE_SNAPSHOT_PATH = path.join(
-  process.env.TMPDIR ?? "/tmp",
-  "dean-psa-e2e-fixture-snapshot.json",
-);
+// ---------------------------------------------------------------------------
+// Entry drift: what the fixtures look like at setup vs. what the seed wrote
+// ---------------------------------------------------------------------------
+
+/**
+ * What prisma/seed.ts's `create` block leaves behind, per fixture.
+ *
+ * WHY THIS EXISTS, given there is already a diff. The teardown diff's "before"
+ * is whatever was in the database when this run started, so it proves THIS RUN
+ * ADDED NO DAMAGE -- not that the fixtures are as seeded. Drift that was
+ * already there at setup is copied into the baseline and then blessed by the
+ * comparison, silently.
+ *
+ * That is not hypothetical. As this was written, admin@mspdemo.local sat at
+ * `tokenVersion: 1` while the other four were at 0.
+ *
+ * THE DELIBERATE DECISION, and it is not "add another absolute invariant".
+ * role/isActive/mustChangePassword/hasPassword have absolute invariants in
+ * global-teardown.ts because their correct value never changes: a fixture that
+ * is deactivated, flagged, password-less or demoted cannot be logged in as, and
+ * three other specs log in as these accounts. `tokenVersion` has no such value.
+ * It is a monotonic counter that a legitimate password change increments, so
+ * "must be 0" would be WRONG -- it would fail a run for something the product
+ * is supposed to do, and the natural way to make that failure go away is to
+ * delete the check.
+ *
+ * So the values below are compared at SETUP and reported as ENTRY DRIFT: a
+ * warning, naming the field and both values, and recorded into the baseline
+ * file so the teardown's pass line can say what the "unchanged" was measured
+ * against. It is a statement about the state the run inherited, which is
+ * exactly what the diff cannot make -- and it is a warning rather than a
+ * failure because entry drift is not this run's doing and cannot invalidate
+ * this run's results. The four fields that DO have absolute invariants are
+ * still hard-failed in global-teardown.ts.
+ *
+ * `tokenVersion: 0` here is the schema default (prisma/schema.prisma:
+ * `tokenVersion Int @default(0)`), which is what the seed's `create` leaves
+ * because it does not set the column; the other three are set explicitly by
+ * that block, and `hasPassword` follows from its `hashedPassword`.
+ */
+export const SEEDED_FIXTURE_ENTRY_STATE = {
+  isActive: true,
+  mustChangePassword: false,
+  hasPassword: true,
+  tokenVersion: 0,
+} as const;
+
+/**
+ * Compares a setup-time snapshot against the seeded values, one line per
+ * divergence. An empty array means the run started from a pristine seed.
+ */
+export function describeEntryDrift(snapshot: FixtureSnapshot): string[] {
+  const drift: string[] = [];
+
+  for (const { email, role } of SEEDED_FIXTURES) {
+    const row = snapshot[email];
+    if (!row) {
+      drift.push(`${email}: absent from the database at setup.`);
+      continue;
+    }
+
+    const expected = { ...SEEDED_FIXTURE_ENTRY_STATE, role };
+    for (const field of Object.keys(expected) as (keyof typeof expected)[]) {
+      if (row[field] !== expected[field]) {
+        drift.push(
+          `${email}: ${field} is ${String(row[field])}, the seed leaves ${String(expected[field])}.`,
+        );
+      }
+    }
+  }
+
+  return drift;
+}
+
+// ---------------------------------------------------------------------------
+// Where the pre-run baseline is parked between the two global hooks
+// ---------------------------------------------------------------------------
+
+/**
+ * The baseline file's path is passed from global setup to global teardown
+ * through this variable. Both hooks run in the SAME runner process, so setting
+ * it in setup is enough; nothing else reads it.
+ */
+export const FIXTURE_SNAPSHOT_PATH_ENV = "E2E_FIXTURE_SNAPSHOT_PATH";
+
+/**
+ * Creates a RUN-SCOPED path for the baseline and records it for the teardown.
+ *
+ * WHAT THIS REPLACES, and why the fixed path was a hole rather than a detail.
+ * The baseline used to be written to one hardcoded name in $TMPDIR. The
+ * teardown treated a MISSING file as "no baseline to diff against", logged a
+ * console.warn and left the run green -- so the headline guarantee, a real
+ * end-state diff of the five shared accounts, could be switched off without
+ * failing anything by:
+ *
+ *   - `rm /tmp/dean-psa-e2e-fixture-snapshot.json` (observed live in review
+ *     cycle 3: the diff was silently skipped and the run still passed);
+ *   - a previous run that was killed after its teardown removed the file but
+ *     before this run wrote it, or any other ordering accident;
+ *   - a CONCURRENT run of this suite, whose teardown deletes the shared path
+ *     and takes this run's baseline with it -- the same collision the sweep
+ *     documents, on a second resource.
+ *
+ * Two changes close it, and both are needed: the path is now unique per run
+ * (mkdtemp, so two runs cannot share or delete each other's file), and a
+ * missing baseline is an ERROR in global-teardown.ts rather than a warning.
+ * A unique path alone would still be skippable by deleting the file; an error
+ * alone would turn a concurrent run into a spurious failure.
+ */
+export function createFixtureSnapshotPath(): string {
+  const dir = mkdtempSync(path.join(tmpdir(), "dean-psa-e2e-"));
+  const file = path.join(dir, "fixture-baseline.json");
+  process.env[FIXTURE_SNAPSHOT_PATH_ENV] = file;
+  return file;
+}
+
+/** The path global setup recorded, or null if it never got that far. */
+export function recordedFixtureSnapshotPath(): string | null {
+  return process.env[FIXTURE_SNAPSHOT_PATH_ENV] ?? null;
+}
+
+/** What global setup writes and global teardown reads back. */
+export type FixtureBaseline = {
+  recordedAt: string;
+  /** Divergences from the seeded values that were ALREADY present at setup. */
+  entryDrift: string[];
+  snapshot: FixtureSnapshot;
+};

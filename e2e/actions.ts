@@ -124,16 +124,47 @@ export async function captureActionCall(
   return seen[seen.length - 1]!;
 }
 
+/** The keys every action return in this codebase is identified by. */
+const ACTION_RESULT_KEYS = ["error", "success", "tempPassword"] as const;
+
 /**
  * Pulls the action's return value out of an RSC flight stream.
  *
- * The stream is line-framed as `<id>:<payload>`; the action's resolved value is
- * the last line whose payload is a JSON object. Returns null when the response
- * carried no such line, which is the normal shape for a redirect (the body is
- * then a full page re-render) -- callers assert on `redirectedTo` in that case.
+ * The stream is line-framed as `<id>:<payload>`. This scans every frame for a
+ * JSON object carrying one of this codebase's action-return keys and requires
+ * there to be EXACTLY ONE. Returns null when there is none, which is the normal
+ * shape for a redirect (the body is then a full page re-render) -- callers
+ * assert on `redirectedTo` in that case.
+ *
+ * WHY "EXACTLY ONE" AND NOT "THE LAST ONE". This used to keep the last matching
+ * frame, and the comment here argued that taking the last was the safe choice
+ * -- reasoning borrowed from captureActionCall above, where "last" genuinely is
+ * right because a background prefetch fires BEFORE the call under observation.
+ * A flight stream is not a request log and has no such ordering: the frames are
+ * the re-rendered tree the reply carries alongside the return value, in
+ * whatever order Next serializes them. So any re-rendered component prop, any
+ * error-boundary payload or any nested object that happens to carry an `error`,
+ * `success` or `tempPassword` key could sit after the real return value and
+ * shadow it -- silently, since the parser has no way to know it picked the
+ * wrong one.
+ *
+ * The damage is not a wrong value; it is a wrong DIAGNOSIS. The test then fails
+ * at an assertion about a refusal message or a temporary password, pointing at
+ * the action or the guard rail under test, with nothing anywhere naming the
+ * parser. Someone would "fix" a working guard rail.
+ *
+ * Failing here instead costs an ambiguous stream a loud, self-describing error
+ * naming both candidates. If a legitimate second candidate ever appears, the
+ * fix is to frame on the action's own result line (Next's envelope frame `0`
+ * references it, e.g. {"a":"$@1",...} -> frame 1) rather than to widen this
+ * back to last-wins.
  */
-function parseActionResult(raw: string): Record<string, unknown> | null {
-  let found: Record<string, unknown> | null = null;
+// Exported ONLY so e2e/harness.spec.ts can execute the ambiguity branch
+// against a stream it constructs. A real response is the wrong instrument for
+// that: the shadowing case is one this build does not currently produce, which
+// is exactly why it went unnoticed as a silent wrong answer.
+export function parseActionResult(raw: string): Record<string, unknown> | null {
+  const candidates: { frame: string; record: Record<string, unknown> }[] = [];
 
   for (const line of raw.split("\n")) {
     const colon = line.indexOf(":");
@@ -144,21 +175,29 @@ function parseActionResult(raw: string): Record<string, unknown> | null {
 
     try {
       const parsed = JSON.parse(payload) as unknown;
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        const record = parsed as Record<string, unknown>;
-        // The first line of every stream is Next's own envelope
-        // ({"a":...,"f":...,"b":"development"}); the action's value is the one
-        // that looks like one of this codebase's action returns.
-        if ("error" in record || "success" in record || "tempPassword" in record) {
-          found = record;
-        }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+
+      const record = parsed as Record<string, unknown>;
+      // Next's own envelope frame ({"a":...,"f":...,"b":"development"}) carries
+      // none of these keys, so it is skipped without being special-cased.
+      if (ACTION_RESULT_KEYS.some((key) => key in record)) {
+        candidates.push({ frame: line.slice(0, colon), record });
       }
     } catch {
       // Not a JSON frame -- flight streams carry plenty of those.
     }
   }
 
-  return found;
+  expect(
+    candidates.length,
+    "the flight stream carried more than one frame that looks like a Server Action " +
+      "return value, so which one the action actually returned is a guess. Frames: " +
+      candidates.map(({ frame, record }) => `${frame}:${JSON.stringify(record)}`).join("  |  ") +
+      ". See parseActionResult in e2e/actions.ts -- do not resolve this by taking " +
+      "the last one.",
+  ).toBeLessThanOrEqual(1);
+
+  return candidates[0]?.record ?? null;
 }
 
 /**

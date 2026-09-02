@@ -38,6 +38,22 @@
  * grade a foreign server, it takes a named environment variable to reach, and
  * defence 3 still runs against it.
  *
+ * THE HATCH RETARGETS THE SERVER ONLY -- AND THAT IS HALF A SUITE. This module
+ * decides what the BROWSER drives. It has never decided what the runner process
+ * talks to: the Prisma client in e2e/db.ts resolves its connection string
+ * independently, so E2E_BASE_URL on its own would leave every `readUserRow`,
+ * the orphan sweep, the per-spec teardown and the seeded-fixture baseline/diff
+ * pointed at the database in this working tree while the browser drove
+ * something else. Half the suite's assertions read a database the graded server
+ * never writes to, and the sweep deletes local accounts while leaving live ones
+ * on the target.
+ *
+ * So the hatch is now a PAIR: setting E2E_BASE_URL requires E2E_DATABASE_URL,
+ * and e2e/global-setup.ts refuses the run at once if only one is set
+ * (resolveE2eDatabaseUrl in e2e/db.ts carries the full explanation and the
+ * failure message). AUTH_SECRET is the same coupling one step further out and
+ * is documented there.
+ *
  * HOSTNAME IS "localhost", NOT "127.0.0.1", AND THAT IS LOAD-BEARING.
  * Next.js 16 dev blocks cross-origin requests for its own dev assets unless the
  * origin is listed in `allowedDevOrigins`. `next dev` announces itself on

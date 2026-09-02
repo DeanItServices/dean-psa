@@ -1,21 +1,29 @@
 import { writeFileSync } from "node:fs";
 import {
   E2E_EMAIL_LIKE,
-  FIXTURE_SNAPSHOT_PATH,
+  createFixtureSnapshotPath,
+  describeEntryDrift,
   disconnectPrisma,
   readFixtureSnapshot,
+  resolveE2eDatabaseUrl,
   sweepE2eAccounts,
+  type FixtureBaseline,
 } from "./db";
 import { E2E_BASE_URL, E2E_SERVER_IS_EXTERNAL } from "./target";
 
 /**
  * Runs once, in the runner process, before the first test.
  *
- * Three jobs, in this order:
- *   1. Refuse to grade a server that is not running the code under test.
- *   2. Delete accounts a previous run orphaned.
- *   3. Snapshot the seeded fixtures so global teardown can prove they were
- *      left as found.
+ * Four jobs, in this order:
+ *   1. Refuse to run at all when the server and the database this process talks
+ *      to are not the same system (see resolveE2eDatabaseUrl in db.ts). Checked
+ *      first because it is the one failure that would make every other check
+ *      here answer about the wrong deployment.
+ *   2. Refuse to grade a server that is not running the code under test.
+ *   3. Delete accounts a previous run orphaned.
+ *   4. Snapshot the seeded fixtures so global teardown can diff against a real
+ *      baseline, and report any drift the run INHERITED, which the diff by
+ *      construction cannot see.
  *
  * A throw here aborts the run before a single browser opens, which is the
  * point: every one of these is a reason no result from this run would mean
@@ -101,6 +109,12 @@ async function assertServedBuildIsCurrent(): Promise<void> {
 }
 
 export default async function globalSetup(): Promise<void> {
+  // Throws when E2E_BASE_URL names a foreign server without E2E_DATABASE_URL
+  // naming its database. Called explicitly, before the first query, so the
+  // failure is a sentence about the coupling rather than a Prisma error
+  // against the wrong host halfway through the sweep.
+  resolveE2eDatabaseUrl();
+
   await assertServedBuildIsCurrent();
 
   try {
@@ -113,10 +127,43 @@ export default async function globalSetup(): Promise<void> {
     }
 
     const snapshot = await readFixtureSnapshot();
-    writeFileSync(FIXTURE_SNAPSHOT_PATH, JSON.stringify(snapshot, null, 2), "utf8");
+
+    // ENTRY DRIFT. The teardown diff can only prove this run added no damage:
+    // its "before" is whatever is here now, so anything already wrong is
+    // copied into the baseline and blessed. This is the one place the run can
+    // say what it INHERITED. See SEEDED_FIXTURE_ENTRY_STATE in db.ts for why
+    // this warns rather than fails, and why tokenVersion gets no invariant.
+    const entryDrift = describeEntryDrift(snapshot);
+
+    const baseline: FixtureBaseline = {
+      recordedAt: new Date().toISOString(),
+      entryDrift,
+      snapshot,
+    };
+
+    // Run-scoped path, and the teardown now ERRORS if it is missing: the fixed
+    // path made the whole diff skippable with one `rm`, silently and greenly.
+    const snapshotPath = createFixtureSnapshotPath();
+    writeFileSync(snapshotPath, JSON.stringify(baseline, null, 2), "utf8");
+
     console.log(
-      `[e2e] seeded-fixture baseline recorded for ${Object.keys(snapshot).length} account(s).`,
+      `[e2e] seeded-fixture baseline recorded for ${Object.keys(snapshot).length} account(s) ` +
+        `at ${snapshotPath}.`,
     );
+
+    if (entryDrift.length > 0) {
+      console.warn(
+        [
+          `[e2e] ENTRY DRIFT: ${entryDrift.length} seeded-fixture value(s) already differ from`,
+          "what prisma/seed.ts writes, BEFORE this run did anything:",
+          ...entryDrift.map((line) => `  - ${line}`),
+          "This run's end-state diff takes the state above as its baseline, so it will",
+          "report these as unchanged. Not a failure: a password change legitimately moves",
+          "tokenVersion, and the four fields that must never drift are hard-failed at",
+          "teardown. Re-run `npm run db:seed` against a fresh database to clear it.",
+        ].join("\n"),
+      );
+    }
   } finally {
     await disconnectPrisma();
   }

@@ -92,7 +92,15 @@ You should see three services: `app` (the Next.js web application, port 3000), `
 
 ## Database migration
 
-Run the migration script against the running `db` service:
+`npm run db:migrate:deploy` and `npm run test:e2e` (below) run on the **host**, not inside a container — Node.js must be installed on the host (matching the version pinned in `Dockerfile`, currently `node:20.20`), and the project's dependencies must be installed there once:
+
+```bash
+npm install
+```
+
+Skipping this step produces `sh: 1: prisma: not found` (or an equivalent "command not found" for other host-side scripts) since `node_modules/.bin` won't exist yet.
+
+Then run the migration script against the running `db` service:
 
 ```bash
 npm run db:migrate:deploy

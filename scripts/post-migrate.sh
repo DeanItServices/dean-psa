@@ -41,7 +41,15 @@ if [ -z "${DATABASE_URL:-}" ]; then
   exit 1
 fi
 
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
+# Prisma's DATABASE_URL includes query parameters (e.g. ?schema=public) that
+# psql's own URI parser rejects with "invalid URI query parameter". psql has
+# no equivalent flag -- it always connects using the role's default
+# search_path, which already includes "public" (the only schema this project
+# uses) -- so the query string is simply dropped before handing the URL to
+# psql, rather than translated.
+PSQL_URL="${DATABASE_URL%%\?*}"
+
+psql "$PSQL_URL" -v ON_ERROR_STOP=1 -c \
   'CREATE UNIQUE INDEX IF NOT EXISTS "TimeEntry_one_active_timer_per_user" ON "TimeEntry" ("userId") WHERE "endedAt" IS NULL;'
 
 echo "post-migrate.sh: TimeEntry_one_active_timer_per_user partial unique index verified/created."

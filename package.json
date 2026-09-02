@@ -10,6 +10,7 @@
     "db:migrate": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy && bash scripts/post-migrate.sh",
     "db:seed": "prisma db seed",
+    "bootstrap:admin": "tsx scripts/create-admin.ts",
     "email-poller": "tsx scripts/email-poller.ts",
     "test:e2e": "playwright test"
   },

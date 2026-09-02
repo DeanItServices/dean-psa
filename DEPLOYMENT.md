@@ -1,6 +1,6 @@
 # Deployment Guide
 
-This document describes how to deploy the MSP PSA application on the MSP's own self-hosted infrastructure using Docker Compose. It reflects the application's state as of the end of Phase 6 (Polish & Launch Prep) and is written to be followed top to bottom on a fresh host.
+This document describes how to deploy the MSP PSA application on the MSP's own self-hosted infrastructure using Docker Compose. It reflects the application's state as of the end of Phase 7 (Account Management & Session Freshness) and is written to be followed top to bottom on a fresh host.
 
 Every command below matches a real script in `package.json`, a real Docker Compose command, or a real file in this repository — nothing here is aspirational.
 
@@ -124,6 +124,8 @@ prisma migrate deploy && bash scripts/post-migrate.sh
 1. `prisma migrate deploy` applies every migration under `prisma/migrations/` in order, including this phase's `20260901190000_add_defense_in_depth_indexes` migration (adds `@@index([companyId])` to `Contact`/`Contract`/`Asset` and a unique index on `Invoice.qboInvoiceId`).
 2. `scripts/post-migrate.sh` then idempotently (`CREATE UNIQUE INDEX IF NOT EXISTS`) re-applies the one-active-timer-per-user partial index on `TimeEntry`, which Prisma's schema DSL cannot express directly and which `prisma migrate deploy` alone does not guarantee on a fresh environment (see the script's own header comment for the full history). It is safe to run repeatedly.
 
+> **Warning — on an upgrade, this must complete before the `app` container restarts.** Application code that runs ahead of its schema does not fail partially here: `authorize()` selects every column, an absent column raises Prisma **P2022** on every request, and the login form reports "Invalid email or password" to everyone including every admin. See "Order matters: apply the migration *before* the app restarts" in the next section for the full explanation and the safe upgrade order.
+
 Run this command from the host (not inside a container) with `DATABASE_URL` in your shell environment pointing at the published `db` port (i.e. matching `.env`'s `DATABASE_URL`/`DB_PORT`), or `exec` into the `app` container and run it there against the Docker-internal `db:5432` address. Either way, run it once after `docker compose up -d` and again after pulling any future update that adds new migrations.
 
 > **Warning — this phase's migration can fail on a non-empty database.** `20260901190000_add_defense_in_depth_indexes` adds a unique constraint on `Invoice.qboInvoiceId`. Multiple `NULL` values are fine (most invoices haven't been pushed to QBO yet), but if the target database already has two or more `Invoice` rows sharing the same non-null `qboInvoiceId`, Postgres will reject the migration with `duplicate key value violates unique constraint`. This matters any time you're migrating a database that isn't brand-new — upgrading an existing pre-Phase-6 deployment, or re-running against a used staging DB. Before running `npm run db:migrate:deploy` against such a database, check for duplicates first:
@@ -136,18 +138,96 @@ Run this command from the host (not inside a container) with `DATABASE_URL` in y
 
 ---
 
+## Creating the first admin account and onboarding the team
+
+<!-- Phase 8: revisit for Caddy/TLS topology -->
+
+> ### Precondition — do not onboard anyone until this deployment is behind TLS
+>
+> `docker-compose.yml` publishes the app directly (`"3000:3000"`) with **no reverse proxy in front of it**, so every byte this application exchanges today crosses the network as plaintext HTTP: the admin password typed at the login form, every temporary password an admin reads off `/admin/users` and hands to a technician, and every session cookie that authenticates all subsequent requests. Anything with visibility of that path — another host on the office LAN, a span port, a compromised access point — can read a session cookie and replay it as that user, and no password rotation revokes an already-stolen 8-hour token.
+>
+> **Phase 8 delivers a Caddy reverse proxy that terminates TLS. Until it has landed and `AUTH_URL` is an `https://` URL, do not create accounts for the team.** Bootstrapping one admin and clicking through the app over a loopback (`http://localhost:3000` on the host itself) or a trusted segment, to prove the deployment works, is fine. Distributing credentials to staff is not — those are the passwords people reuse and the sessions that carry every ticket, invoice and QuickBooks action in this system.
+
+### Order matters: apply the migration *before* the app restarts
+
+**Run `npm run db:migrate:deploy` (see "Database migration" above) and confirm it succeeded before starting or restarting the `app` and `email-poller` containers on any upgrade that includes new columns.** This is not a preference — with application code running ahead of its schema, this app does not degrade partially, it fails completely and misleadingly:
+
+- `authorize()` (`src/auth.ts`) looks the user up with `findUnique` and **no `select` clause**, so Prisma asks Postgres for every column the current schema defines.
+- If a column the code knows about does not yet exist in the database, Prisma raises **P2022** (`The column ... does not exist in the current database`) on that query — and therefore on *every* login attempt and every authenticated page load.
+- `loginAction` translates any failure from `authorize()` into the same anti-enumeration message the wrong password produces: **"Invalid email or password"**. Every user sees it. **Including every admin.** There is no in-app escape hatch, no error detail, and nothing in the UI that says "run a migration": recovering requires shell access to the host and `docker compose logs app` (or `psql`) to see the real P2022 underneath.
+
+So the safe upgrade order on an existing deployment is: pull → `npm install && npx prisma generate` → **`npm run db:migrate:deploy`** → `docker compose build` → `docker compose up -d`. On a brand-new deployment, `docker compose up -d` before the migration is harmless *provided nobody tries to log in* until `db:migrate:deploy` has run.
+
+`scripts/create-admin.ts` (below) detects P2022 itself and prints this same guidance rather than a raw Prisma stack trace, so if you bootstrap the admin before restarting anything, the script tells you the migration is missing.
+
+### Create the admin: `npm run bootstrap:admin`
+
+```bash
+set -a; . ./.env; set +a     # the script does not load .env by itself
+npm run bootstrap:admin
+```
+
+This runs `scripts/create-admin.ts` on the **host** (same host-side tooling requirements as `npm run db:migrate:deploy`: `npm install` and `npx prisma generate` must already have been run). It prompts for a display name, an email address and a password, then creates the account with `role: "admin"` and reads the row straight back out of the database so you can see the role you actually got:
+
+```
+Created admin account (read back from the database):
+
+  id                 cmt...
+  email              admin@yourmsp.com
+  role               admin
+  isActive           true
+  mustChangePassword false
+```
+
+Details that matter:
+
+- **The password is never accepted as an argument or an environment variable.** It is read from an interactive prompt with terminal echo suppressed, and is never printed or logged. `npm run bootstrap:admin -- admin@yourmsp.com hunter2` is rejected: a password passed that way lands in your shell history and is visible in `ps` output to every other user on the host for as long as the process runs. The email may come from the command line (`npm run bootstrap:admin -- admin@yourmsp.com`); the password may not.
+- **The script requires an interactive terminal.** It refuses to run from a pipe, a CI job, or `docker compose exec` without `-it`, rather than silently accepting an empty password.
+- **Minimum password length is 12 characters**, imported from the same constant the rest of the application uses (`src/lib/validations/user.ts`), with no composition rules. You are asked to type it twice, since you cannot see it.
+- **The email is lowercased** before it is stored. `authorize()` looks accounts up with `email.toLowerCase()`, so an address stored with any uppercase character would be permanently unreachable — and the failed login would report "Invalid email or password" with no hint as to why.
+- **`DATABASE_URL` must be exported into your shell.** Unlike `prisma db seed`, a plain `tsx` script on this project loads no `.env` file; the script checks the variable up front and tells you so by name instead of failing inside the Postgres driver with an undefined-connection-string error.
+- **An existing email is refused, not overwritten** — non-zero exit, nothing written, and a pointer to the `--reset-password` path below.
+
+The demo-account seed is **no longer the documented way to create a real admin.** `prisma/seed.ts` and its `ALLOW_SEED_IN_PRODUCTION` override still exist and the guard rail is still correct, but it is now a local-development tool only — see "First-run verification" below.
+
+### Onboard the rest of the team
+
+1. Navigate to `AUTH_URL` and log in as the admin you just created.
+2. Go to **Admin → Users** (`/admin/users`), which is admin-only and gated at both the route and the Server Action layer.
+3. Create an account for each staff member with the appropriate role (`technician`, `dispatcher`, `sales`, `finance`, `admin`). The application generates a strong temporary password and **displays it exactly once** — it is never emailed, never logged, and cannot be retrieved again. Copy it before dismissing the dialog and deliver it to that person over a channel you trust (in person, or a password manager's share link — not a plaintext email or a group chat).
+4. Every account created this way is flagged `mustChangePassword`, so that person's first login lands on `/change-password` and nothing else in the app is reachable until they set their own password. That is enforced server-side, not just in the UI — a temporary password that leaked in transit cannot be used to call an action.
+5. If you lose or mistype a temporary password before it reaches its owner, reset it from the same screen; a new one is generated and the old one stops working immediately.
+
+### If you are locked out: `--reset-password` (break-glass)
+
+There is no self-service "forgot password" flow in this build, and resetting another user's password from `/admin/users` requires an admin session — so if the only admin loses their password, there is nothing in the UI that can recover it. That is what this flag is for:
+
+```bash
+set -a; . ./.env; set +a
+npm run bootstrap:admin -- --reset-password admin@yourmsp.com
+```
+
+It is deliberately loud and never the default. It prints the target account's id, email, name, role and active state, and requires you to **type that account's email back** before anything is written; anything else aborts with a non-zero exit and no change. It then prompts for a new password (hidden, twice, same 12-character floor) and clears `mustChangePassword`, so a recovered admin lands on the dashboard rather than being bounced into `/change-password` mid-outage.
+
+It only targets accounts whose role is already `admin` — a normal user's password is reset by an admin from `/admin/users`. It also does **not** reactivate a deactivated account: if the target has `isActive = false` it warns you that resetting the password changes nothing (an inactive account is rejected before its password is ever compared) and that reactivation is a separate, deliberate decision made from `/admin/users`.
+
+Treat host shell access as equivalent to admin access to this application, because this flag makes it so.
+
+### Deactivation is silent by design — tell people out of band
+
+When you deactivate a user from `/admin/users`, their existing session stops working on their next request (the session is re-checked against the database on every request, not carried for the life of the 8-hour token), and any attempt to log in again returns **"Invalid email or password"** — the exact message a wrong password or a nonexistent account produces.
+
+**This is deliberate**, not a missing feature: `authorize()` returns an identical failure for "no such account", "deactivated", "no password set" and "wrong password", and checks `isActive` *before* comparing the password so the two cannot even be told apart by response timing. That is what stops an outsider using the login form to discover which email addresses have accounts here.
+
+The operational consequence is that **a deactivated person is never told they were deactivated** — they see the same screen someone who forgot their password sees, and their natural next step is to file a support request. Offboarding must therefore be communicated out of band (by the manager, in the offboarding checklist). Note also that deactivation is not deletion: the row stays, and their tickets, comments and time entries remain intact for billing history, so a mistaken deactivation is reversible with **Reactivate** on the same screen.
+
+---
+
 ## First-run verification
 
-**Do not rely on the seeded demo users for a real deployment.** `prisma/seed.ts` creates five test accounts (`technician@mspdemo.local`, `dispatcher@mspdemo.local`, `sales@mspdemo.local`, `finance@mspdemo.local`, `admin@mspdemo.local`), all sharing a single well-known password (`Password123!`). The seed script itself refuses to run when `NODE_ENV=production` unless `ALLOW_SEED_IN_PRODUCTION=true` is explicitly set, precisely to prevent these well-known credentials from ever existing in a real deployment's database.
+**Do not rely on the seeded demo users for a real deployment.** `prisma/seed.ts` creates five test accounts (`technician@mspdemo.local`, `dispatcher@mspdemo.local`, `sales@mspdemo.local`, `finance@mspdemo.local`, `admin@mspdemo.local`), all sharing a single well-known password (`Password123!`). It exists for local development and for the E2E suite's login fixture. The seed script refuses to run when `NODE_ENV=production` unless `ALLOW_SEED_IN_PRODUCTION=true` is explicitly set, precisely to prevent these well-known credentials from ever existing in a real deployment's database — **do not set that override on a production database.** Creating the real admin is `npm run bootstrap:admin`'s job, as described above; the previous guidance in this document (a modified seed run, or a hand-written `psql` insert) is obsolete and should not be followed.
 
-**There is currently no self-service signup flow and no admin-user-management UI in the application** — confirmed by inspecting `src/auth.ts` (a Credentials-only Auth.js provider that checks `db.user.hashedPassword` and never creates a user) and by a full-project search for any registration route or admin user-creation screen, neither of which exists. The only way any account is created is a direct write to the `User` table. In practice, for a real deployment, the operator must create the first real admin account one of these ways:
-
-- Run `prisma/seed.ts` against the production database with a **modified** user list (replace the demo emails/password with the MSP's real admin email and a strong, unique password) and set `ALLOW_SEED_IN_PRODUCTION=true` for that one run only, or
-- Write and run a small one-off script (or a `prisma studio` / direct `psql` session) that inserts a `User` row with `role: "admin"` and a bcrypt hash (matching `src/auth.ts`'s `compare()` call, which uses `bcryptjs`) of a real password.
-
-Either approach is a manual, one-time bootstrap step for a fresh deployment. **This is a real gap, not a documentation oversight** — see "Operational notes" below for the recommendation to close it in a future phase.
-
-Once a real admin account exists:
+Once the real admin account exists (see the previous section):
 
 1. Navigate to `AUTH_URL` and log in with the real admin account (not a seeded demo account).
 2. Confirm the dashboard loads and at least one core workflow is reachable (e.g. Tickets, Clients, Reports).
@@ -187,7 +267,7 @@ Two known gaps in current E2E coverage, both intentional and documented in the s
 
 - **Ownership-scoped ticket delete has no UI entry point**: Phase 6 added an ownership check to `deleteTicket` (a `technician` may only delete a ticket assigned to them; `dispatcher`/`admin` are unrestricted) at the Server Action level, but no delete button, menu, or affordance exists anywhere in the UI to invoke it — confirmed by a full-project search finding zero references to `deleteTicket` outside its own definition. This is not a deployment blocker (the function is simply unreachable, not broken), but operators should be aware that "ticket deletion" is not currently an available feature through the UI at all, for any role, despite the underlying authorization logic being in place.
 
-- **No admin/signup UI to create real user accounts**: as covered in "First-run verification" above, creating any account today requires a direct database write (via a modified seed script run or a manual insert). If this application will be operated long-term, prioritize adding a real admin user-management screen in a future phase — this is a genuine operational gap in the current build, not just a missing convenience.
+- **Account management exists; self-service signup does not**: this gap is closed for the operator's purposes. `npm run bootstrap:admin` creates the first admin (no seed run, no hand-written insert), and `/admin/users` handles create / change-role / reset-password / deactivate / reactivate for everyone after that — see "Creating the first admin account and onboarding the team" above. What still does not exist, deliberately: **self-service signup** (accounts are only ever created by an admin), **self-service password reset** (a locked-out user needs an admin; a locked-out *sole admin* needs host shell access and `npm run bootstrap:admin -- --reset-password`), **email invitations** (temporary passwords are shown once on screen and delivered by the admin out of band), and **an audit log** — any admin may reset, demote or deactivate any other admin, and the only trace is an unstructured line in the `app` container's stdout. Plan for admin accounts accordingly: they are mutually trusting, and `docker compose logs app` is not a tamper-evident record.
 
 - **QuickBooks Item-mapping caveat**: `src/lib/actions/invoices.ts` (around line 352-367, `SalesItemLineDetail`) hardcodes `ItemRef.value` to `"1"` for every invoice line pushed to QuickBooks Online. QBO requires each line to reference a real `Item` entity configured in the target QBO company (commonly the default "Services" item, which is often ID `1`, but this is **not guaranteed** across every QBO company/chart-of-accounts configuration). This codebase has no Item-mapping concept — it does not look up or let the operator configure which QBO Item ID each invoice line should reference. **Before relying on QBO push in production, confirm that ID `1` actually resolves to a valid, appropriate Item in your specific QBO company** (check via QBO's own UI or API), or invoice pushes will fail or post against the wrong item. This is a known, accepted limitation carried into Phase 6, not something this phase's scope included fixing.
 

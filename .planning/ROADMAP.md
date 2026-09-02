@@ -8,7 +8,7 @@
 - [x] Phase 4: Time Tracking & Billing (6 plans) — Complete
 - [x] Phase 5: Reporting & Dashboards (4 plans) — Complete
 - [x] Phase 6: Polish & Launch Prep (9 plans) — Complete
-- [ ] Phase 7: Account Management & Session Freshness (7 plans)
+- [x] Phase 7: Account Management & Session Freshness (7 plans) — Complete
 - [ ] Phase 8: Deployment Hardening (4 plans)
 - [ ] Phase 9: Verification & Debt Closure (3 plans)
 
@@ -96,17 +96,17 @@ verified line references behind each success criterion.*
 **Requirements**: Role-based access control (extends the Phase 1 requirement — the admin-facing half was never built)
 **Recommended Agents**: engineering-backend-architect, engineering-frontend-developer, engineering-security-engineer
 **Success Criteria**:
-- [ ] Additive migration adds `User.isActive` (default true) and `User.mustChangePassword` (default false); `prisma/seed.ts` sets both explicitly so the E2E login fixture keeps working
-- [ ] `/admin/users` exists, gated on the already-wired `admin:manage_users` permission and linked from the sidebar's Admin section, supporting create / edit-role / reset-password / deactivate / reactivate
-- [ ] New-user creation lowercase-normalizes email to match `authorize()`, and shows the generated temp password exactly once without logging it
-- [ ] `getCurrentUser()` performs one indexed lookup and returns database `role` / `isActive` / `mustChangePassword`; an inactive or deleted user resolves to null and is treated as unauthenticated
-- [ ] Guard rails hold: an admin cannot deactivate or demote themselves, and at least one active admin always remains
-- [ ] `/change-password` lives at `(auth)/change-password` (outside the `(dashboard)` gate that redirects to it) and clears `mustChangePassword` on success
-- [ ] `npm run bootstrap:admin` creates the first real admin (explicitly `role: "admin"`, password validated against the shared minimum), retiring `ALLOW_SEED_IN_PRODUCTION` as the documented path, with an explicit `--reset-password` break-glass for a locked-out sole admin
-- [ ] `authorize()` also refuses inactive users, so deactivation cannot be bypassed by simply logging in again for a fresh JWT — and every failure path still returns an identical null, preserving the anti-enumeration property
-- [ ] `requireRole()` itself enforces `mustChangePassword`, so a holder of an intercepted temp password cannot invoke Server Actions; `/api/qbo/connect`, which cannot call `requireRole()`, carries its own equivalent check
-- [ ] `resetUserPassword` refuses a self-target, so no admin can strand themselves
-- [ ] Phase 7's behavioural claims are executable in `e2e/user-lifecycle.spec.ts` and pass, and the merged tree passes `prisma generate`, `tsc --noEmit` and `lint`
+- [x] Additive migration adds `User.isActive` (default true) and `User.mustChangePassword` (default false); `prisma/seed.ts` sets both explicitly so the E2E login fixture keeps working
+- [x] `/admin/users` exists, gated on the already-wired `admin:manage_users` permission and linked from the sidebar's Admin section, supporting create / edit-role / reset-password / deactivate / reactivate
+- [x] New-user creation lowercase-normalizes email to match `authorize()`, and shows the generated temp password exactly once without logging it
+- [x] `getCurrentUser()` performs one indexed lookup and returns database `role` / `isActive` / `mustChangePassword`; an inactive or deleted user resolves to null and is treated as unauthenticated
+- [x] Guard rails hold: an admin cannot deactivate or demote themselves, and at least one active admin always remains
+- [x] `/change-password` lives at `(auth)/change-password` (outside the `(dashboard)` gate that redirects to it) and clears `mustChangePassword` on success
+- [x] `npm run bootstrap:admin` creates the first real admin (explicitly `role: "admin"`, password validated against the shared minimum), retiring `ALLOW_SEED_IN_PRODUCTION` as the documented path, with an explicit `--reset-password` break-glass for a locked-out sole admin
+- [x] `authorize()` also refuses inactive users, so deactivation cannot be bypassed by simply logging in again for a fresh JWT — and every failure path still returns an identical null, preserving the anti-enumeration property
+- [x] `requireRole()` itself enforces `mustChangePassword`, so a holder of an intercepted temp password cannot invoke Server Actions; `/api/qbo/connect`, which cannot call `requireRole()`, carries its own equivalent check
+- [x] `resetUserPassword` refuses a self-target, so no admin can strand themselves
+- [x] Phase 7's behavioural claims are executable in `e2e/user-lifecycle.spec.ts` and pass, and the merged tree passes `prisma generate`, `tsc --noEmit` and `lint`
 **Plans**: 7
 
 ### Phase 8: Deployment Hardening
@@ -144,6 +144,6 @@ verified line references behind each success criterion.*
 | Phase 4: Time Tracking & Billing | 6 | 6 | Complete |
 | Phase 5: Reporting & Dashboards | 4 | 4 | Complete |
 | Phase 6: Polish & Launch Prep | 9 | 9 | Complete |
-| Phase 7: Account Management & Session Freshness | 7 | 0 | Pending |
+| Phase 7: Account Management & Session Freshness | 7 | 7 | Complete |
 | Phase 8: Deployment Hardening | 4 | 0 | Pending |
 | Phase 9: Verification & Debt Closure | 3 | 0 | Pending |

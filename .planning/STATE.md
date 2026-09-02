@@ -1,14 +1,14 @@
 # Project State
 
 ## Current Position
-- **Phase**: 7 of 9 (planned)
-- **Status**: Phase 7 planned -- 7 plans across 4 waves
-- **Last Activity**: Phase 7 planning (2026-09-02)
-- **Next Action**: Run `/legion:build` to execute Phase 7: Account Management & Session Freshness
+- **Phase**: 7 of 9 (executed, pending review)
+- **Status**: Phase 7 complete -- all 7 plans executed successfully
+- **Last Activity**: Phase 7 execution (2026-09-02)
+- **Next Action**: Run `/legion:review` to verify Phase 7: Account Management & Session Freshness
 
 ## Progress
 ```
-[##############......] 72% — 32/44 plans complete
+[#################...] 89% — 39/44 plans complete
 ```
 
 ## GitHub
@@ -18,6 +18,12 @@
 - Phase 7 issue: https://github.com/DeanItServices/dean-psa/issues/19
 
 ## Recent Decisions
+- **Phase 7 executed (2026-09-02)**: all 7 plans passed across 4 waves. Waves 2 and 3 ran in parallel on verified-disjoint file sets. Every plan's changes were independently re-verified by the orchestrator (`tsc --noEmit`, `lint`, targeted greps) rather than accepted on the agent's report.
+- **Phase 7 evidence**: `e2e/user-lifecycle.spec.ts` -- 13 tests, passing, re-run independently. It proves deactivation and role changes take effect on the next request without re-login (verified by decoding the live session cookie, which still carries the OLD role), and that the self-target refusals are enforced server-side rather than only disabled in the UI (verified by invoking the handler off React's fiber props, since removing the DOM `disabled` attribute is not sufficient).
+- **CARRIED TO PHASE 8 (serious)**: `getClientIp()` falls back to the literal key `"unknown"` when no `X-Forwarded-For`/`X-Real-IP` is present, and `docker-compose.yml` ships no reverse proxy -- so **every user in the deployment shares one 60-request-per-minute budget**. Measured: requests 61-75 to `/unauthorized` returned 429, surfacing to the user as "Something went wrong. Please try again." The app is unusable for a real team until Phase 8's Caddy work lands.
+- **CARRIED TO PHASE 9**: the advisory full-suite run was 14 passed / 4 failed / 2 skipped. All four failures are pre-existing Radix/route-announcer strict-mode selector issues in specs that had never been executed against a browser; `tickets.spec.ts:72` is additionally flaky. Phase 9 owns the first real run and fixing what breaks -- these were deliberately advisory, not Phase 7 blockers.
+- **Phase 7 findings for review**: the last-active-admin branch is unreachable except under concurrency (correct, but its error string can never be seen by a lone admin, and 07-03's advisory lock is load-bearing rather than defensive); the three self-target error messages are unreachable through the shipped UI because 07-05 disables the controls; `ui/card.tsx`'s `CardTitle` renders a `<div>`, so `/change-password` and `/unauthorized` have no heading element at all (pre-existing).
+- **Environment note**: `playwright.config.ts` sets `reuseExistingServer: !process.env.CI` with a hardcoded `localhost:3000`, so the running `dean-psa-app-1` container had to be stopped for the E2E run -- otherwise Playwright silently tests the deployed image rather than the working tree. Restarted afterwards. Worth fixing in Phase 9 alongside the test-database decision.
 - **Launch Readiness milestone opened (2026-09-02)**: Phases 7-9 added to the roadmap from `.planning/explorations/2026-09-02-launch-readiness-design.md`. Roadmap went 6 phases/32 plans -> 9 phases/44 plans.
 - **Codebase map generated (2026-09-02)**: `.planning/CODEBASE.md` plus `.planning/codebase/` (69 chunks, 160 symbols) and `.planning/config/directory-mappings.yaml`, analyzed at commit f2e1113 over 120 source files.
 - **Phase 7 planned as 7 plans / 4 waves**, after two rounds of plan critique. Round 1 returned REWORK (5 CRITICAL) and forced a restructure from 5 plans/3 waves; round 2 returned NEEDS WORK and drove in-place fixes. Architecture proposals and the spec pipeline were both skipped by user choice -- the exploration had already compared four approaches and recorded the rejections.

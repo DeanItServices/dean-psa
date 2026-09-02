@@ -18,17 +18,19 @@ enum Role {
 }
 
 model User {
-  id             String    @id @default(cuid())
-  name           String?
-  email          String    @unique
-  emailVerified  DateTime?
-  image          String?
-  hashedPassword String?
-  role           Role      @default(technician)
-  accounts       Account[]
-  sessions       Session[]
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  id                 String    @id @default(cuid())
+  name               String?
+  email              String    @unique
+  emailVerified      DateTime?
+  image              String?
+  hashedPassword     String?
+  role               Role      @default(technician)
+  isActive           Boolean   @default(true)
+  mustChangePassword Boolean   @default(false)
+  accounts           Account[]
+  sessions           Session[]
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   assignedTickets Ticket[]        @relation("AssignedTickets")
   ticketComments  TicketComment[] @relation("TicketCommentAuthor")

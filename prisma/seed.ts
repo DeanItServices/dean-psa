@@ -41,12 +41,20 @@ async function main() {
   for (const { email, name, role } of TEST_USERS) {
     await db.user.upsert({
       where: { email },
-      update: {},
+      // Not `update: {}`: a re-seed against a database that already holds
+      // these accounts must still set the activation columns, or the E2E
+      // login fixture breaks once the active-user gate is live.
+      update: {
+        isActive: true,
+        mustChangePassword: false,
+      },
       create: {
         email,
         name,
         role,
         hashedPassword,
+        isActive: true,
+        mustChangePassword: false,
       },
     });
   }

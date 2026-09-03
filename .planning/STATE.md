@@ -1,10 +1,10 @@
 # Project State
 
 ## Current Position
-- **Phase**: 7 of 9 (complete)
-- **Status**: Phase 7 complete -- review passed (3 cycles + 1 fix pass)
-- **Last Activity**: Phase 7 review passed (2026-09-02)
-- **Next Action**: Run `/legion:plan 8` to plan Phase 8: Deployment Hardening
+- **Phase**: 7 of 9 (shipped)
+- **Status**: Phase 7 shipped -- PR #20 open against master
+- **Last Activity**: Phase 7 shipped (2026-09-03)
+- **Next Action**: Merge PR #20, then run `/legion:plan 8` to plan Phase 8: Deployment Hardening
 
 ## Progress
 ```
@@ -15,9 +15,14 @@
 - Phase 4 issue: https://github.com/DeanItServices/dean-psa/issues/1
 - Phase 5 issue: https://github.com/DeanItServices/dean-psa/issues/5
 - Phase 6 issue: https://github.com/DeanItServices/dean-psa/issues/8
-- Phase 7 issue: https://github.com/DeanItServices/dean-psa/issues/19
+- Phase 7 issue: https://github.com/DeanItServices/dean-psa/issues/19 (closed)
+- Phase 7 PR: https://github.com/DeanItServices/dean-psa/pull/20
 
 ## Recent Decisions
+- **Phase 7 shipped (2026-09-03)**: PR #20 against master, 17 commits. Pre-ship gate passed 6/6 -- 41/41 verification commands, 45/45 E2E, tsc clean, lint 0 errors, clean tree.
+- **DEPLOY ORDER MATTERS for this PR**: the migration must be applied BEFORE the app restarts. `authorize()` does `findUnique` with no `select`, so code arriving ahead of its schema raises P2022 on every request and `loginAction` reports "Invalid email or password" to every user including every admin, with no in-app signal. Safe order: pull -> `npm install && npx prisma generate` -> `npm run db:migrate:deploy` -> build -> up.
+- **Deploying logs every current session out once** -- existing JWTs predate the `tokenVersion` claim and are refused. Deliberate and fail-closed, but it will look like an outage if unexpected.
+- **Do not onboard staff until Phase 8 lands TLS.** compose still publishes the app directly with no proxy, so temp passwords and session cookies would cross plaintext HTTP. `DEPLOYMENT.md` states this as a precondition.
 - **Phase 7 review PASSED (2026-09-02)** after 3 cycles plus an authorised fix pass. 12 blockers found and resolved. Full detail in `.planning/phases/07-account-management-session-freshness/07-REVIEW.md`.
 - **The review's central finding was about evidence, not code.** Four of the eleven success criteria had been marked complete on evidence that was tautological, proved a different mechanism, or graded a stale build. Criteria 5, 9 and 11 are now PROVEN BY TEST; criterion 8's fake proof was deleted rather than reworded; criterion 7 went from ASSERTED ONLY to PROVEN BY TEST for its write path.
 - **Two real security defects were found in shipped code**, neither caught by the two plan-critique rounds or the build's own integration gate: a password reset did not revoke sessions (so an attacker riding a stolen session survived it and could take the account permanently, while the UI promised otherwise), and `/login` — the only path anyone authenticates through — had no rate limiting at all, because login is a Server Action posting to `/login` rather than `/api/auth/*`. A third, a plaintext password leaking into the URL on a pre-hydration form submit, was found while fixing the first two.

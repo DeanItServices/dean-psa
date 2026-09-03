@@ -8,7 +8,7 @@
 - [x] Phase 4: Time Tracking & Billing (6 plans) — Complete
 - [x] Phase 5: Reporting & Dashboards (4 plans) — Complete
 - [x] Phase 6: Polish & Launch Prep (9 plans) — Complete
-- [x] Phase 7: Account Management & Session Freshness (7 plans) — Complete
+- [x] Phase 7: Account Management & Session Freshness (7 plans) — Shipped (PR #20)
 - [ ] Phase 8: Deployment Hardening (4 plans)
 - [ ] Phase 9: Verification & Debt Closure (3 plans)
 
@@ -144,6 +144,6 @@ verified line references behind each success criterion.*
 | Phase 4: Time Tracking & Billing | 6 | 6 | Complete |
 | Phase 5: Reporting & Dashboards | 4 | 4 | Complete |
 | Phase 6: Polish & Launch Prep | 9 | 9 | Complete |
-| Phase 7: Account Management & Session Freshness | 7 | 7 | Complete |
+| Phase 7: Account Management & Session Freshness | 7 | 7 | Shipped |
 | Phase 8: Deployment Hardening | 4 | 0 | Pending |
 | Phase 9: Verification & Debt Closure | 3 | 0 | Pending |

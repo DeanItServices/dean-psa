@@ -1,4 +1,5 @@
 import * as React from "react"
+import { Slot } from "radix-ui"
 
 import { cn } from "@/lib/utils"
 
@@ -28,9 +29,27 @@ function CardHeader({ className, ...props }: React.ComponentProps<"div">) {
   )
 }
 
-function CardTitle({ className, ...props }: React.ComponentProps<"div">) {
+/**
+ * Card heading. Renders a <div> by default -- shadcn's stock markup, and the
+ * reason /login and /change-password shipped with zero headings: a card title
+ * looks like a heading but carries no heading semantics, so a screen-reader
+ * user has nothing to navigate by.
+ *
+ * `asChild` is the escape hatch (same Slot convention as Button and Badge):
+ * pass the element that is semantically right for the page --
+ * <CardTitle asChild><h1>...</h1></CardTitle> -- and the card's typography is
+ * merged onto it. The heading LEVEL is deliberately the caller's decision;
+ * it depends on what else is on the page, which this component cannot know.
+ */
+function CardTitle({
+  className,
+  asChild = false,
+  ...props
+}: React.ComponentProps<"div"> & { asChild?: boolean }) {
+  const Comp = asChild ? Slot.Root : "div"
+
   return (
-    <div
+    <Comp
       data-slot="card-title"
       className={cn("leading-none font-semibold", className)}
       {...props}

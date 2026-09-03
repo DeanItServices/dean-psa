@@ -131,7 +131,7 @@ function cleanupStaleEntries(now: number) {
  * function; the fix is infrastructure (add a reverse proxy that owns these
  * headers), not application code.
  */
-function getClientIp(request: NextRequest): string {
+function getClientIp(request: NextRequest): string | null {
   const forwardedFor = request.headers.get("x-forwarded-for");
   if (forwardedFor) {
     return forwardedFor.split(",")[0]!.trim();
@@ -142,7 +142,10 @@ function getClientIp(request: NextRequest): string {
     return realIp.trim();
   }
 
-  return "unknown";
+  // null, NOT a shared "unknown" key. The caller skips rate limiting entirely
+  // for an unidentifiable client -- see the block comment at that call site for
+  // the measured denial of service a shared bucket produced.
+  return null;
 }
 
 /**
@@ -179,33 +182,86 @@ function rateLimited(retryAfterSeconds: number): NextResponse {
 
 /**
  * Middleware entry point. Runs the rate limiter first for every route the
- * (widened) matcher below covers -- including /api/auth/* -- then, only for
- * non-/api/auth/* routes, delegates to the existing NextAuth coarse
- * session-check.
+ * matcher below covers -- including /api/auth/* AND /login -- then, for
+ * everything except those two, delegates to the NextAuth coarse session-check.
  *
- * /api/auth/* is intentionally excluded from the NextAuth auth() gate here:
- * those routes ARE the auth system itself (NextAuth's own credential-check,
- * CSRF, and session endpoints). Running a "do you have a session" check in
- * front of the login endpoint would break login for legitimate
- * unauthenticated users. Rate limiting still applies to /api/auth/* (with a
- * tighter threshold, see AUTH_RATE_LIMIT above) -- this is the real
- * brute-force surface a rate limiter exists to protect, and it is genuinely
- * covered here because the matcher below was widened to stop excluding it.
+ * WHY /login IS HANDLED EXPLICITLY (corrected after review-cycle 2). The
+ * previous matcher excluded `login` outright, on the assumption that
+ * /api/auth/* was the credential-check surface AUTH_RATE_LIMIT protects. It is
+ * not the surface this app uses. `loginAction` (src/app/(auth)/login/actions.ts)
+ * is a Server Action: the browser POSTs it to the page's own URL, /login, and
+ * it calls signIn() in-process. No request ever reaches /api/auth/callback/*.
+ * So the tightened AUTH_RATE_LIMIT guarded endpoints this application never
+ * calls, while the real password-guessing endpoint was excluded from the
+ * middleware entirely and had NO limit at all. Measured before the fix: 70
+ * POSTs to /login produced 0 x 429, while 70 GETs to /unauthorized (identical
+ * client, same window) produced 10 x 429 -- proving the limiter worked and
+ * simply never saw /login.
+ *
+ * /login now runs through the limiter, with the POST (the credential attempt)
+ * charged against the tight `auth:` bucket and the GET against the general one.
+ *
+ * Both /api/auth/* and /login then return NextResponse.next() WITHOUT the
+ * session gate. Those routes ARE the auth system: running "do you have a
+ * session" in front of the login page would bounce every unauthenticated
+ * visitor from /login to /login forever. The gate must never run here.
  */
 export default function middleware(request: NextRequest, event: NextFetchEvent) {
   const pathname = request.nextUrl.pathname;
   const isAuthRoute = pathname.startsWith("/api/auth");
 
+  // Exact match, not startsWith: only the login page itself skips the session
+  // gate. A hypothetical /login-something must not inherit that exemption.
+  const isLoginRoute = pathname === "/login";
+  const isCredentialAttempt = isLoginRoute && request.method === "POST";
+
   const ip = getClientIp(request);
-  const limit = isAuthRoute ? AUTH_RATE_LIMIT : GENERAL_RATE_LIMIT;
-  const rateLimitKey = isAuthRoute ? `auth:${ip}` : `general:${ip}`;
+  const useAuthLimit = isAuthRoute || isCredentialAttempt;
+
+  // WHY AN UNIDENTIFIABLE CLIENT IS NOT RATE LIMITED
+  //
+  // getClientIp() returns null when neither x-forwarded-for nor x-real-ip is
+  // present. It previously fell back to the literal key "unknown", so every
+  // such client would share ONE bucket.
+  //
+  // That was survivable while the tight bucket covered only /api/auth/*, which
+  // this app never uses for login. Once POST /login joined that bucket, a
+  // shared key would mean 10 requests per minute from anyone could lock every
+  // user out of signing in.
+  //
+  // MEASURED, so the reasoning is not left hanging: on Next 16's dev server a
+  // header is in fact always present, so this null branch does not fire and
+  // bucketing is per source address (15 requests with distinct
+  // x-forwarded-for values all passed; requests sharing a source correctly
+  // shared a bucket). The shared-key hazard is therefore latent, not live --
+  // it depends on a deployment where nothing upstream supplies either header,
+  // which has NOT been observed here and is unverified for the Compose
+  // topology.
+  //
+  // The branch stays because the failure mode it prevents is severe and the
+  // cost is nil: counting an unidentifiable client cannot deter an attacker
+  // (who spoofs a fresh x-forwarded-for per request and lands in a fresh
+  // bucket anyway) while it could lock out everyone else. Skipping is the
+  // safer default until Phase 8's reverse proxy makes the header trustworthy
+  // -- the same infrastructure fix getClientIp()'s trust-boundary warning
+  // above has always named. Do not restore a shared fallback key.
+  if (ip === null) {
+    return handleAfterRateLimit();
+  }
+
+  const limit = useAuthLimit ? AUTH_RATE_LIMIT : GENERAL_RATE_LIMIT;
+  const rateLimitKey = useAuthLimit ? `auth:${ip}` : `general:${ip}`;
 
   const retryAfter = checkRateLimit(rateLimitKey, limit);
   if (retryAfter !== null) {
     return rateLimited(retryAfter);
   }
 
-  if (isAuthRoute) {
+  return handleAfterRateLimit();
+
+  function handleAfterRateLimit() {
+
+  if (isAuthRoute || isLoginRoute) {
     return NextResponse.next();
   }
 
@@ -226,15 +282,22 @@ export default function middleware(request: NextRequest, event: NextFetchEvent) 
     ev: NextFetchEvent,
   ) => ReturnType<import("next/server").NextMiddleware>;
 
-  return authAsMiddleware(request, event);
+    return authAsMiddleware(request, event);
+  }
 }
 
 export const config = {
-  // WIDENED (corrected after plan critique): the previous matcher excluded
-  // api/auth entirely, which meant NextAuth's own login endpoint -- the
-  // primary brute-force surface -- was never rate-limited. It now runs
-  // through this middleware too; see the isAuthRoute branch above for how
-  // the session-check gate is skipped for it while the rate limiter still
-  // applies.
-  matcher: ["/((?!login|_next/static|_next/image|favicon.ico).*)"],
+  // WIDENED TWICE.
+  //
+  // First (plan critique): it excluded api/auth, so NextAuth's own endpoints
+  // were never rate-limited.
+  //
+  // Second (review cycle 2): it excluded `login`, so the ACTUAL credential
+  // endpoint this app posts to -- the /login page itself, which receives the
+  // loginAction Server Action -- was never rate-limited either. Both
+  // exclusions are gone; the isAuthRoute / isLoginRoute branches above skip
+  // the session-check gate for them while the rate limiter still applies.
+  //
+  // Only genuinely static, non-credential paths remain excluded.
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };

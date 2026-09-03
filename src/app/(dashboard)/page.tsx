@@ -15,7 +15,7 @@ import {
   CardDescription,
 } from "@/components/ui/card";
 import { can } from "@/lib/permissions";
-import { getCurrentUser } from "@/lib/session";
+import { requireActiveUser } from "@/lib/session";
 
 type QuickLink = {
   href: string;
@@ -78,9 +78,14 @@ function getQuickLinks(role: Parameters<typeof can>[0]): QuickLink[] {
 }
 
 export default async function DashboardPage() {
-  const user = await getCurrentUser();
-  const displayName = user?.name ?? user?.email ?? "there";
-  const quickLinks = user ? getQuickLinks(user.role) : [];
+  // requireActiveUser(), not getCurrentUser(): a shared layout does not
+  // re-render on a soft navigation, so the inactive / mustChangePassword gate
+  // has to run in the leaf too. See src/lib/session.ts. This page previously
+  // had NO gate of its own at all -- it rendered "Welcome back, there" for a
+  // null user and relied entirely on the layout.
+  const user = await requireActiveUser();
+  const displayName = user.name ?? user.email ?? "there";
+  const quickLinks = getQuickLinks(user.role);
 
   return (
     <div className="flex flex-col gap-6">
@@ -93,7 +98,7 @@ export default async function DashboardPage() {
             Welcome back, {displayName}
           </h1>
           <p className="text-sm text-muted-foreground">
-            Signed in as {user?.role ?? "unknown role"}
+            Signed in as {user.role}
           </p>
         </div>
       </div>

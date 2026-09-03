@@ -1,22 +1,44 @@
 # Project State
 
 ## Current Position
-- **Phase**: 6 of 6 (complete)
-- **Status**: Phase 6 complete -- review passed (2 cycles)
-- **Last Activity**: Phase 6 review passed (2026-09-01)
-- **Next Action**: All phases complete -- project review finished! Consider running the real Playwright E2E suite (`npx playwright install --with-deps chromium && npm run test:e2e`) and addressing the no-signup-UI gap before production launch.
+- **Phase**: 7 of 9 (shipped)
+- **Status**: Phase 7 shipped -- PR #20 open against master
+- **Last Activity**: Phase 7 shipped (2026-09-03)
+- **Next Action**: Merge PR #20, then run `/legion:plan 8` to plan Phase 8: Deployment Hardening
 
 ## Progress
 ```
-[####################] 100% — 32/32 plans complete
+[#################...] 89% — 39/44 plans complete
 ```
 
 ## GitHub
 - Phase 4 issue: https://github.com/DeanItServices/dean-psa/issues/1
 - Phase 5 issue: https://github.com/DeanItServices/dean-psa/issues/5
 - Phase 6 issue: https://github.com/DeanItServices/dean-psa/issues/8
+- Phase 7 issue: https://github.com/DeanItServices/dean-psa/issues/19 (closed)
+- Phase 7 PR: https://github.com/DeanItServices/dean-psa/pull/20
 
 ## Recent Decisions
+- **Phase 7 shipped (2026-09-03)**: PR #20 against master, 17 commits. Pre-ship gate passed 6/6 -- 41/41 verification commands, 45/45 E2E, tsc clean, lint 0 errors, clean tree.
+- **DEPLOY ORDER MATTERS for this PR**: the migration must be applied BEFORE the app restarts. `authorize()` does `findUnique` with no `select`, so code arriving ahead of its schema raises P2022 on every request and `loginAction` reports "Invalid email or password" to every user including every admin, with no in-app signal. Safe order: pull -> `npm install && npx prisma generate` -> `npm run db:migrate:deploy` -> build -> up.
+- **Deploying logs every current session out once** -- existing JWTs predate the `tokenVersion` claim and are refused. Deliberate and fail-closed, but it will look like an outage if unexpected.
+- **Do not onboard staff until Phase 8 lands TLS.** compose still publishes the app directly with no proxy, so temp passwords and session cookies would cross plaintext HTTP. `DEPLOYMENT.md` states this as a precondition.
+- **Phase 7 review PASSED (2026-09-02)** after 3 cycles plus an authorised fix pass. 12 blockers found and resolved. Full detail in `.planning/phases/07-account-management-session-freshness/07-REVIEW.md`.
+- **The review's central finding was about evidence, not code.** Four of the eleven success criteria had been marked complete on evidence that was tautological, proved a different mechanism, or graded a stale build. Criteria 5, 9 and 11 are now PROVEN BY TEST; criterion 8's fake proof was deleted rather than reworded; criterion 7 went from ASSERTED ONLY to PROVEN BY TEST for its write path.
+- **Two real security defects were found in shipped code**, neither caught by the two plan-critique rounds or the build's own integration gate: a password reset did not revoke sessions (so an attacker riding a stolen session survived it and could take the account permanently, while the UI promised otherwise), and `/login` — the only path anyone authenticates through — had no rate limiting at all, because login is a Server Action posting to `/login` rather than `/api/auth/*`. A third, a plaintext password leaking into the URL on a pre-hydration form submit, was found while fixing the first two.
+- **A correction on the record**: the rate limiter's shared-bucket hazard was reported as a confirmed denial of service on the strength of a measurement that was invalid (attacker and victim were the same host, so they legitimately shared a bucket). Re-measured; the hazard is latent and unverified for the Compose topology. The defensive fix was kept, but its code comment says so.
+- **Test count 19 -> 45**, `npm run test:e2e` exit 0. The command the runbook names had been permanently red because Playwright's exit code is per-process and the advisory Phase 9 specs were bundled into it.
+- **Phase 7 executed (2026-09-02)**: all 7 plans passed across 4 waves. Waves 2 and 3 ran in parallel on verified-disjoint file sets. Every plan's changes were independently re-verified by the orchestrator (`tsc --noEmit`, `lint`, targeted greps) rather than accepted on the agent's report.
+- **Phase 7 evidence**: `e2e/user-lifecycle.spec.ts` -- 13 tests, passing, re-run independently. It proves deactivation and role changes take effect on the next request without re-login (verified by decoding the live session cookie, which still carries the OLD role), and that the self-target refusals are enforced server-side rather than only disabled in the UI (verified by invoking the handler off React's fiber props, since removing the DOM `disabled` attribute is not sufficient).
+- **CARRIED TO PHASE 8 (serious)**: `getClientIp()` falls back to the literal key `"unknown"` when no `X-Forwarded-For`/`X-Real-IP` is present, and `docker-compose.yml` ships no reverse proxy -- so **every user in the deployment shares one 60-request-per-minute budget**. Measured: requests 61-75 to `/unauthorized` returned 429, surfacing to the user as "Something went wrong. Please try again." The app is unusable for a real team until Phase 8's Caddy work lands.
+- **CARRIED TO PHASE 9**: the advisory full-suite run was 14 passed / 4 failed / 2 skipped. All four failures are pre-existing Radix/route-announcer strict-mode selector issues in specs that had never been executed against a browser; `tickets.spec.ts:72` is additionally flaky. Phase 9 owns the first real run and fixing what breaks -- these were deliberately advisory, not Phase 7 blockers.
+- **Phase 7 findings for review**: the last-active-admin branch is unreachable except under concurrency (correct, but its error string can never be seen by a lone admin, and 07-03's advisory lock is load-bearing rather than defensive); the three self-target error messages are unreachable through the shipped UI because 07-05 disables the controls; `ui/card.tsx`'s `CardTitle` renders a `<div>`, so `/change-password` and `/unauthorized` have no heading element at all (pre-existing).
+- **Environment note**: `playwright.config.ts` sets `reuseExistingServer: !process.env.CI` with a hardcoded `localhost:3000`, so the running `dean-psa-app-1` container had to be stopped for the E2E run -- otherwise Playwright silently tests the deployed image rather than the working tree. Restarted afterwards. Worth fixing in Phase 9 alongside the test-database decision.
+- **Launch Readiness milestone opened (2026-09-02)**: Phases 7-9 added to the roadmap from `.planning/explorations/2026-09-02-launch-readiness-design.md`. Roadmap went 6 phases/32 plans -> 9 phases/44 plans.
+- **Codebase map generated (2026-09-02)**: `.planning/CODEBASE.md` plus `.planning/codebase/` (69 chunks, 160 symbols) and `.planning/config/directory-mappings.yaml`, analyzed at commit f2e1113 over 120 source files.
+- **Phase 7 planned as 7 plans / 4 waves**, after two rounds of plan critique. Round 1 returned REWORK (5 CRITICAL) and forced a restructure from 5 plans/3 waves; round 2 returned NEEDS WORK and drove in-place fixes. Architecture proposals and the spec pipeline were both skipped by user choice -- the exploration had already compared four approaches and recorded the rejections.
+- **Phase 7 findings worth carrying forward**: (1) the migration MUST land before the app restarts -- `authorize()` does `findUnique` with no `select`, so code landing first raises P2022 on every request and `loginAction` reports "Invalid email or password" to every user including every admin; (2) `/api/qbo/connect` cannot use `requireRole()` (documented at `route.ts:9-27`) so it needs its own `mustChangePassword` check; (3) a bare `db.$transaction` does not serialize the last-active-admin invariant -- Prisma defaults to READ COMMITTED; (4) onboarding must not be performed until Phase 8 delivers TLS.
+- **Correction to the codebase map**: `CODEBASE.md` and the `cmp-001`/`rt-006` index chunks originally described a sidebar "Admin section with a QuickBooks link" that does not exist -- `app-sidebar.tsx:74-98` is one `<li>` with a ternary rendering a single link labelled "Admin", plus a dead else-branch. Corrected on the Phase 7 planning branch.
 - Tech stack: Next.js + TypeScript + PostgreSQL + Docker, self-hosted
 - Execution mode: Guided
 - Planning depth: Deep Analysis (6 phases)

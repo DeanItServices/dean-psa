@@ -71,6 +71,18 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
 };
 
 /**
+ * Single source of truth for which roles may create, re-role, reset the
+ * password of, deactivate or reactivate a User account (i.e. hold
+ * "admin:manage_users"). Every user-lifecycle Server Action imports this
+ * constant for its requireRole() call instead of hardcoding its own literal
+ * role array -- see 07-CONTEXT.md's RBAC decisions. Peer admins are
+ * deliberately unrestricted: any admin may act on any OTHER admin, and the
+ * actions themselves enforce the self-target and last-active-admin guard
+ * rails that this constant cannot express.
+ */
+export const ADMIN_MANAGE_ROLES: Role[] = ["admin"];
+
+/**
  * Single source of truth for which roles may create/edit/delete CRM records
  * (Company, Site, Contact, Contract, Asset). Every CRM Server Action imports
  * this constant for its requireRole() call instead of hardcoding its own

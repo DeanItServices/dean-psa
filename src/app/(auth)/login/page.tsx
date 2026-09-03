@@ -48,12 +48,23 @@ export default function LoginPage() {
   return (
     <Card className="w-full max-w-md">
       <CardHeader>
-        <CardTitle className="text-center text-2xl">
-          Sign in to MSP PSA
+        <CardTitle asChild className="text-center text-2xl">
+          <h1>Sign in to MSP PSA</h1>
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+        {/*
+          method="post" is load-bearing, not decoration. A <form> with only an
+          onSubmit handler falls back to the HTML default when submitted before
+          React hydrates -- a GET to the current URL carrying every named field
+          in the query string. That was observed putting a live password into
+          the dev server's access log:
+            GET /login?email=...&password=... 200
+          which also means the URL bar, browser history and any referrer. POST
+          keeps the credential in a body that goes nowhere, so a pre-hydration
+          submit is merely inert instead of a credential leak.
+        */}
+        <form method="post" onSubmit={handleSubmit} className="flex flex-col gap-4">
           <div className="flex flex-col gap-2">
             <Label htmlFor="email">Email</Label>
             <Input

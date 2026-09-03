@@ -16,13 +16,16 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   ...authConfig,
   session: {
     strategy: "jwt",
-    // Shortened from Auth.js's 30-day default. Because JWT sessions are
-    // self-contained (no adapter-backed session store), there is no
-    // server-side mechanism to revoke a token early -- a leaked JWT, or one
-    // issued to a technician who is later offboarded, otherwise stays valid
-    // for the full maxAge. 8 hours bounds that exposure window to roughly
-    // one business day while still avoiding constant re-logins for an
-    // internal tool.
+    // Shortened from Auth.js's 30-day default. KEPT AT 8 HOURS, revisited
+    // deliberately: revocation is no longer impossible. getCurrentUser()
+    // (src/lib/session.ts) now re-reads the user row on every request, so an
+    // offboarded technician is refused on their next request rather than at
+    // the end of maxAge, and authorize() below refuses them a fresh token.
+    // maxAge is therefore no longer the revocation mechanism -- but it is
+    // still the bound on the one case the database check cannot see: a JWT
+    // stolen from a user nobody has deactivated, which stays replayable
+    // until it expires. 8 hours keeps that window to roughly one business
+    // day while avoiding constant re-logins for an internal tool.
     maxAge: 60 * 60 * 8,
   },
   providers: [
@@ -52,11 +55,19 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         });
 
         // SECURITY: Do not distinguish "user not found" from "user has no
-        // password set" (e.g. an OAuth-only account) from "wrong password".
-        // Every failure path below returns null identically so the caller
-        // (and any error message surfaced to the client) cannot be used to
-        // enumerate valid account emails.
-        if (!user || !user.hashedPassword) {
+        // password set" (e.g. an OAuth-only account) from "deactivated" from
+        // "wrong password". Every failure path below returns null
+        // identically -- same value, same absence of a message, same absence
+        // of a log line -- so neither the caller nor any error surfaced to
+        // the client can be used to enumerate valid account emails or to
+        // tell a deactivated account from one that never existed.
+        //
+        // isActive is checked HERE rather than after the password compare so
+        // that a deactivated account is indistinguishable from a nonexistent
+        // one by response timing too (both skip bcrypt). Without this check
+        // deactivation would be trivially bypassable: the offboarded user
+        // simply logs in again and mints a fresh 8-hour JWT.
+        if (!user || !user.hashedPassword || !user.isActive) {
           return null;
         }
 
@@ -66,11 +77,17 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           return null;
         }
 
+        // tokenVersion is captured HERE, at mint time, and carried on the JWT
+        // by the callback below. getCurrentUser() compares it against the
+        // column on every request, so any later increment (password reset,
+        // password change) invalidates this token and every other one issued
+        // before it.
         return {
           id: user.id,
           email: user.email,
           name: user.name,
           role: user.role,
+          tokenVersion: user.tokenVersion,
         };
       },
     }),
@@ -80,13 +97,33 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     jwt: async ({ token, user }) => {
       // `user` is only defined on the initial sign-in call; persist the
       // fields we need onto the token for every subsequent request.
+      //
+      // tokenVersion is stamped ONCE, at sign-in, and never refreshed from the
+      // database afterwards. That is the whole mechanism: a token frozen at
+      // the generation it was minted in, compared against the live column by
+      // getCurrentUser(). Re-reading it here on every call would make the
+      // token silently self-heal after a revoking write and defeat the check.
       if (user) {
         token.id = user.id as string;
         token.role = user.role as typeof token.role;
+        token.tokenVersion = user.tokenVersion;
       }
       return token;
     },
     session: async ({ session, token }) => {
+      // WHAT GOES ON `session` GOES ON THE WIRE. This object is what
+      // NextAuth's own handlers serve from GET /api/auth/session -- a route
+      // that is exempt from the middleware session gate and never consults
+      // getCurrentUser(), so it answers for tokens getCurrentUser() refuses
+      // (revoked, or belonging to a deactivated user).
+      //
+      // tokenVersion is therefore deliberately NOT copied here, and is absent
+      // from the `Session` augmentation in types/next-auth.d.ts so it cannot
+      // be re-added by accident. getCurrentUser() reads it from the raw JWT
+      // instead (src/lib/session.ts). Leaving it here would have published a
+      // password-rotation counter to any client and confirmed that a refused
+      // token is still signature-valid -- and the first useSession() anyone
+      // added would have bypassed every database check.
       if (session.user) {
         session.user.id = token.id as string;
         session.user.role = token.role as typeof session.user.role;

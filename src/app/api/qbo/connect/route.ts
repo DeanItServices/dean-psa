@@ -26,6 +26,16 @@ export async function GET(request: Request) {
     return NextResponse.redirect(new URL("/unauthorized", request.url));
   }
 
+  // requireRole() enforces mustChangePassword for every Server Action, but
+  // this handler deliberately cannot call it (see above), so the same gate is
+  // repeated here -- otherwise a holder of an intercepted temp password could
+  // still start the QuickBooks OAuth flow. Returned as a NextResponse
+  // redirect, not next/navigation's redirect(), for the reason documented
+  // above: redirect() throws a digest this pipeline does not intercept.
+  if (user.mustChangePassword) {
+    return NextResponse.redirect(new URL("/change-password", request.url));
+  }
+
   const state = randomBytes(32).toString("hex");
 
   const response = NextResponse.redirect(buildAuthorizeUrl(state));

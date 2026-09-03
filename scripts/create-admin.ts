@@ -128,7 +128,7 @@ async function askSecret(query: string): Promise<string> {
  */
 async function askNewPassword(): Promise<string> {
   for (;;) {
-    const password = await askSecret("Password (hidden, min " + MIN_PASSWORD_LENGTH + " chars): ");
+    const password = await askSecret(`Password (hidden, min ${MIN_PASSWORD_LENGTH} chars): `);
 
     const check = validateBootstrapPassword(password);
     if (!check.ok) {
@@ -263,13 +263,13 @@ async function main(): Promise<number> {
 }
 
 /** Prints a written row the way the operator needs to read it back. */
-function printRow(result: Extract<BootstrapResult, { ok: true }>["user"]): void {
-  console.log(`  id                 ${result.id}`);
-  console.log(`  email              ${result.email}`);
-  console.log(`  name               ${result.name ?? "(none)"}`);
-  console.log(`  role               ${result.role}`);
-  console.log(`  isActive           ${result.isActive}`);
-  console.log(`  mustChangePassword ${result.mustChangePassword}`);
+function printRow(row: Extract<BootstrapResult, { ok: true }>["user"]): void {
+  console.log(`  id                 ${row.id}`);
+  console.log(`  email              ${row.email}`);
+  console.log(`  name               ${row.name ?? "(none)"}`);
+  console.log(`  role               ${row.role}`);
+  console.log(`  isActive           ${row.isActive}`);
+  console.log(`  mustChangePassword ${row.mustChangePassword}`);
 }
 
 async function runCreate(
@@ -370,7 +370,7 @@ async function runReset(
     );
   }
 
-  const confirmation = await ask(`\nType the account email to confirm (or anything else to abort): `);
+  const confirmation = await ask("\nType the account email to confirm (or anything else to abort): ");
 
   // Checked here so a wrong answer aborts BEFORE the operator is made to type
   // a new password twice into a hidden prompt. Same predicate the write uses.

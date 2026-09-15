@@ -3,18 +3,30 @@ import { NextResponse, type NextFetchEvent, type NextRequest } from "next/server
 import { authConfig } from "./auth.config";
 
 /**
- * Edge-safe route protection, wrapped with an IP-keyed in-memory rate
- * limiter (see below). This imports ONLY the Edge-safe base config
- * (./auth.config) -- never the full Node auth module, which pulls in the
- * Prisma adapter and cannot run in the Edge runtime.
+ * Route protection, wrapped with an IP-keyed in-memory rate limiter (see
+ * below).
+ *
+ * RUNTIME: this file is the Next.js 16 Proxy convention (formerly
+ * `middleware.ts`, deprecated in 16.0.0). Proxy runs on the Node.js runtime
+ * and that runtime is NOT configurable -- setting a `runtime` config option
+ * in a Proxy file throws. See
+ * node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/proxy.md:255.
+ * Nothing here may therefore be justified by an Edge-runtime restriction;
+ * where such a justification used to appear it has been corrected in place.
+ *
+ * It still imports ONLY the base config (./auth.config) and never the full
+ * Node auth module. That is now a deliberate design choice rather than a
+ * runtime requirement: the request-gate has no business pulling in the
+ * Prisma adapter, a database connection, or password hashing just to answer
+ * "is there a session?".
  *
  * The wrapped NextAuth handler performs a coarse, fast check: "is there a
  * session at all?" (via the `authorized` callback in auth.config.ts),
  * redirecting to /login if not. It does NOT perform role-based
  * authorization -- that is the job of requireRole() in src/lib/session.ts,
- * called server-side (Node runtime) from protected Server
- * Components/layouts. Treat middleware as UX-speed defense only, never as
- * the authoritative permission boundary.
+ * called server-side from protected Server Components/layouts. Treat this
+ * proxy as UX-speed defense only, never as the authoritative permission
+ * boundary.
  */
 const authMiddleware = NextAuth(authConfig).auth;
 
@@ -26,7 +38,7 @@ const authMiddleware = NextAuth(authConfig).auth;
 // self-hosted, single-instance deployment for <25 users. A fixed-window,
 // in-memory limiter is a deliberate, sufficient choice for that scale -- NOT
 // a distributed rate limiter. It resets on process restart and is only
-// correct for a single Node/Edge process; do not assume it holds under
+// correct for a single Node.js server process; do not assume it holds under
 // horizontal scaling without moving the counter store to something shared
 // (e.g. Redis) first. This is a brute-force/DoS speed bump, not a
 // per-tenant quota system.
@@ -59,10 +71,23 @@ const AUTH_RATE_LIMIT = 10; // requests per window per IP, /api/auth/* (credenti
 
 type RateLimitEntry = { count: number; windowStart: number };
 
-// Module-level Map -- persists for the lifetime of the Edge runtime instance.
-// Cleared opportunistically (see cleanupStaleEntries) rather than via a
-// scheduled job, to avoid unbounded growth over a long-running process
-// without adding a timer/interval in the Edge runtime.
+// Module-level Map -- persists for the lifetime of the Node.js server
+// process this Proxy runs in. Cleared opportunistically (see
+// cleanupStaleEntries) rather than via a scheduled job, to avoid unbounded
+// growth over a long-running process without adding a timer/interval.
+//
+// KNOWN DEVIATION FROM THE DOCS, INHERITED DELIBERATELY. proxy.md:19 says of
+// Proxy: "Proxy is meant to be invoked separately of your render code and in
+// optimized cases deployed to your CDN for fast redirect/rewrite handling,
+// you should not attempt relying on shared modules or globals." This module
+// -level Map is exactly such a global. It is accepted here because this app
+// is a self-hosted, single-instance Compose deployment with no CDN and no
+// horizontal scaling -- the same scope decision the block comment above
+// records. The moment that stops being true (a second app replica, a CDN or
+// edge deployment of the Proxy), the counter stops being a single shared
+// counter and the limiter silently weakens by a factor of the replica count.
+// The fix at that point is a shared store (e.g. Redis), NOT a bigger Map.
+// Carried forward knowingly rather than discovered later.
 const rateLimitStore = new Map<string, RateLimitEntry>();
 
 let requestsSinceCleanup = 0;
@@ -81,9 +106,11 @@ function cleanupStaleEntries(now: number) {
 }
 
 /**
- * Extracts the client IP from the request. Next.js 16's Edge middleware
- * runtime has no direct socket-address API (NextRequest.ip was removed in
- * Next.js 15) -- the documented approach is to read it from the
+ * Extracts the client IP from the request. NextRequest exposes no
+ * socket-address API in Next.js 16 -- `NextRequest.ip` was removed in
+ * Next.js 15 and the Proxy convention did not bring it back, so this holds
+ * on the Node.js runtime too -- and the documented approach is to read it
+ * from the
  * `x-forwarded-for` header, which a reverse proxy (nginx, Docker's own
  * network, a cloud LB) sets to "client, proxy1, proxy2" -- the first entry
  * is the original client. `x-real-ip` is a common single-value fallback some
@@ -181,7 +208,7 @@ function rateLimited(retryAfterSeconds: number): NextResponse {
 }
 
 /**
- * Middleware entry point. Runs the rate limiter first for every route the
+ * Proxy entry point. Runs the rate limiter first for every route the
  * matcher below covers -- including /api/auth/* AND /login -- then, for
  * everything except those two, delegates to the NextAuth coarse session-check.
  *
@@ -206,7 +233,7 @@ function rateLimited(retryAfterSeconds: number): NextResponse {
  * session" in front of the login page would bounce every unauthenticated
  * visitor from /login to /login forever. The gate must never run here.
  */
-export default function middleware(request: NextRequest, event: NextFetchEvent) {
+export default function proxy(request: NextRequest, event: NextFetchEvent) {
   const pathname = request.nextUrl.pathname;
   const isAuthRoute = pathname.startsWith("/api/auth");
 
@@ -267,20 +294,41 @@ export default function middleware(request: NextRequest, event: NextFetchEvent) 
 
   // authMiddleware is NextAuth(authConfig).auth, the same value the previous
   // `export default NextAuth(authConfig).auth` exposed directly to Next.js's
-  // middleware runtime -- Next.js itself always invokes the default export
+  // request-gate runtime -- Next.js itself always invokes the default export
   // with (request, event), so calling it the same way here preserves
-  // identical behavior for every non-/api/auth/* route. NextAuth v5's `auth`
-  // export type is an intersection of several call signatures (Pages Router
-  // API-route usage, Server Component usage, App Router middleware usage,
-  // etc.) and TypeScript's overload resolution for a 2-argument call picks
-  // the Pages Router `(NextApiRequest, NextApiResponse)` signature instead
-  // of the middleware `(NextAuthRequest, NextFetchEvent)` one -- a known
-  // next-auth v5 typing limitation, not a runtime mismatch. Cast to the
-  // actual runtime call shape used by Next.js's middleware invocation.
+  // identical behavior for every non-/api/auth/* route.
+  //
+  // THE CAST IS STILL REQUIRED UNDER THE NODE RUNTIME -- RE-DERIVED, NOT
+  // COPIED. next-auth 5.0.0-beta.32 types `auth` as an intersection of five
+  // call signatures (node_modules/next-auth/index.d.ts:209-211):
+  //
+  //   (NextApiRequest, NextApiResponse)            => Promise<Session | null>
+  //   ()                                           => Promise<Session | null>
+  //   (GetServerSidePropsContext)                  => Promise<Session | null>
+  //   ((NextAuthRequest, AppRouteHandlerFnContext) => ...) => AppRouteHandlerFn
+  //   (NextAuthMiddleware)                         => NextMiddleware
+  //
+  // Exactly ONE of those accepts two arguments, and it is the Pages Router
+  // `(NextApiRequest, NextApiResponse)` one. There is no
+  // `(NextRequest, NextFetchEvent)` signature to resolve to at all -- the
+  // last two overloads take a single *handler function* and return one. So
+  // `authMiddleware(request, event)` type-checks against the Pages Router
+  // signature and fails; verified in this tree by deleting the cast and
+  // running `npx tsc --noEmit`, which reports:
+  //   src/proxy.ts: error TS2345: Argument of type 'NextRequest' is not
+  //   assignable to parameter of type 'NextApiRequest'.
+  //
+  // This is a next-auth v5 typing limitation about *which* Next.js entry
+  // point is being described, not a runtime mismatch, so the Edge -> Node
+  // move does not affect it. Cast to the actual runtime call shape Next.js
+  // uses to invoke the Proxy default export. `NextProxy` is next/server's
+  // Next.js 16 name for that shape; `NextMiddleware`, which this cast used
+  // before, is the identical type but carries an @deprecated tag
+  // (node_modules/next/dist/server/web/types.d.ts:51-63).
   const authAsMiddleware = authMiddleware as unknown as (
     req: NextRequest,
     ev: NextFetchEvent,
-  ) => ReturnType<import("next/server").NextMiddleware>;
+  ) => ReturnType<import("next/server").NextProxy>;
 
     return authAsMiddleware(request, event);
   }

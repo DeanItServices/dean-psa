@@ -1,14 +1,14 @@
 # Project State
 
 ## Current Position
-- **Phase**: 8 of 9 (planned)
-- **Status**: Phase 8 planned -- 4 plans across 3 waves; plan critique REWORK resolved (5 CRITICAL fixed)
-- **Last Activity**: Phase 8 planning (2026-09-15)
-- **Next Action**: Run `/legion:build` to execute Phase 8: Deployment Hardening
+- **Phase**: 8 of 9 (in progress -- wave 1 of 3 complete)
+- **Status**: Phase 8 wave 1 complete -- 08-01 passed. Waves 2-3 not started: they need a Docker daemon, which this environment does not have.
+- **Last Activity**: Phase 8 wave 1 execution (2026-09-15)
+- **Next Action**: Run `/legion:build` from an environment with Docker to execute waves 2-3 (08-02, 08-03, 08-04)
 
 ## Progress
 ```
-[################....] 84% — 39/46 plans complete
+[#################...] 86% — 40/46 plans complete
 ```
 
 ## GitHub
@@ -20,6 +20,11 @@
 - Phase 8 issue: https://github.com/DeanItServices/dean-psa/issues/22
 
 ## Recent Decisions
+- **Phase 8 wave 1 executed (2026-09-15)**: 08-01 proxy migration Complete. `src/middleware.ts` -> `src/proxy.ts`, export renamed, `tsc --noEmit` and `lint` both 0. The code-only diff against HEAD is exactly two hunks (the export name, and `NextMiddleware` -> `NextProxy`) -- independently re-verified by the coordinator, not taken from the agent's report. The codemod preserved all ~180 lines of load-bearing commentary, so nothing needed restoring.
+- **The claim the phase ordering rests on is now verified against this install**, not just the exploration doc: `proxy.md:255` confirms Proxy is Node-runtime and not configurable, and `version-16.md:616` confirms Edge is not supported in proxy. So migrate-before-env-read was the right ordering.
+- **`authAsMiddleware` cast kept, and re-derived rather than copied.** next-auth 5.0.0-beta.32 types `auth` as five call signatures, only one of which takes two arguments -- the Pages Router pair. The runtime shape Next uses is unrepresented, orthogonal to Edge vs Node. Confirmed empirically: deleting the cast yields TS2345. Retargeted `NextMiddleware` -> `NextProxy` (an identical alias carrying a deprecation notice on the old name).
+- **Waves 2-3 blocked on environment, not on the work.** 08-03 validates with `docker compose config -q` and 08-04's end-to-end check needs a running stack; this container has the docker binary but no daemon. 08-01 had no such dependency.
+- **Unowned stale reference carried forward**: `src/lib/session.ts:166` says "never from Edge middleware", which is now wrong. `src/lib/**` is forbidden to every Phase 8 plan, so no plan in this phase can correct it -- needs picking up past this milestone.
 - **Phase 8 planned (2026-09-15)**: 4 plans across 3 waves, matching ROADMAP's count. Spec pipeline run (`.planning/specs/08-deployment-hardening-spec.md`); architecture proposals skipped because the exploration doc already locks the approach. Ordering is load-bearing: the `proxy.ts` migration must precede the env-configurable rate limits (Edge inlines `process.env` at build time), and the `getClientIp()` trust-boundary comment must follow Caddy rather than precede it.
 - **Plan critique returned REWORK; all 5 CRITICAL findings verified and fixed before execution.** (1) `openssl rand -base64 32` breaks the `DATABASE_URL` URI while `db` starts healthy; (2) `RATE_LIMIT_*` never reached the container because `app.environment` enumerates keys and Compose `.env` is interpolation-only; (3) literal `db` port removal had no working replacement — alpine has no `bash`/`psql` and `bootstrap:admin` refuses non-interactive exec; (4) nothing mechanically proved the Caddy `X-Forwarded-For` directive landed, so a false security comment could ship; (5) `AUTH_URL`'s http default survived, silently downgrading the session cookie behind TLS.
 - **DEVIATION from ROADMAP Phase 8 criterion (user decision)**: "the host-published `db` port is removed" is implemented as a **loopback bind** `127.0.0.1:${DB_PORT}:5432`. Literal removal strands migrations, seed, `bootstrap:admin` and the E2E suite with no working replacement in the shipped image. Loopback closes the exposure the criterion targets — Postgres unreachable off-host — while keeping every documented host procedure working.

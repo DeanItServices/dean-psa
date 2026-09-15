@@ -145,5 +145,5 @@ verified line references behind each success criterion.*
 | Phase 5: Reporting & Dashboards | 4 | 4 | Complete |
 | Phase 6: Polish & Launch Prep | 9 | 9 | Complete |
 | Phase 7: Account Management & Session Freshness | 7 | 7 | Shipped |
-| Phase 8: Deployment Hardening | 4 | 0 | Pending |
+| Phase 8: Deployment Hardening | 4 | 1 | In Progress |
 | Phase 9: Verification & Debt Closure | 3 | 0 | Pending |

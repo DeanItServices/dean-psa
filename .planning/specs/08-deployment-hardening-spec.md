@@ -31,7 +31,7 @@ Phase 8 success criteria and the exploration doc's MVP "Deployment hardening" bl
 | P8-4 | Caddy service fronts the app with HTTP-01 automatic TLS | Must | `Caddyfile` exists; `caddy` service owns 80/443; `app` has no `ports:` key |
 | P8-5 | `getClientIp()` trust-boundary comment states the boundary is now enforced | Must | Comment names Caddy as the enforcing component; no longer says "no protection" |
 | P8-6 | `postgres:postgres` replaced by generated secrets in all three places | Must | No literal `postgres:postgres` anywhere in `docker-compose.yml` |
-| P8-7 | Host-published `db` port removed | Must | No `ports:` mapping on the `db` service |
+| P8-7 | `db` no longer reachable off-host | Must | `db` publishes only on `127.0.0.1` (revised from literal removal — see Key Decisions) |
 | P8-8 | `DEPLOYMENT.md` and `.env.example` reflect the new topology | Must | TLS precondition retracted; `POSTGRES_PASSWORD` initdb caveat + `ALTER USER` documented |
 
 ## Architecture
@@ -56,7 +56,7 @@ Four deliverable groups over three waves. The ordering is not cosmetic:
 | Migration mechanism | Run `npx @next/codemod@canary middleware-to-proxy .`, then diff and hand-correct | The file carries ~180 lines of load-bearing comments recording two matcher widenings and a measured DoS. A codemod will not preserve them meaningfully | Hand-write the new file; skip the codemod |
 | Rate-limit env names | `RATE_LIMIT_WINDOW_MS`, `RATE_LIMIT_GENERAL`, `RATE_LIMIT_AUTH` | Matches the existing constant names (`RATE_LIMIT_WINDOW_MS`, `GENERAL_RATE_LIMIT`, `AUTH_RATE_LIMIT`) so the mapping is obvious at a glance | `RL_*` short forms; a single JSON blob |
 | Invalid env value handling | Fall back to the default and log once at startup | A typo'd limit must not silently disable rate limiting or crash the proxy on every request | Throw at module load; coerce `NaN` to 0 |
-| `db` port removal | Literal removal per P8-7; migrations documented via `docker compose exec` | Honors the locked criterion. DEPLOYMENT.md:129 already documents the exec path as a supported alternative | Loopback bind `127.0.0.1:${DB_PORT}:5432` — see Open Question 1 |
+| `db` port removal | **Loopback bind `127.0.0.1:${DB_PORT}:5432`** (revised after plan critique; user decision) | Literal removal strands every host procedure: the runner image is `node:20.20-alpine` with no `bash` and no `psql`, so the `docker compose exec` path DEPLOYMENT.md:129 offers has never worked, and `bootstrap:admin` refuses non-interactive exec (DEPLOYMENT.md:185). Loopback closes the exposure — Postgres unreachable off-host — while keeping migrations, seed, bootstrap and E2E working | Literal removal + `apk add bash postgresql-client`; literal removal + exec-only docs |
 | `auth.config.ts` | Leave the split in place, correct only the docstring | The split is still good design (the proxy has no business importing the Prisma adapter); loosening it during a launch milestone buys nothing | Merge back into `proxy.ts` now that Edge is not a constraint |
 
 ## API and Type Contracts
@@ -153,7 +153,7 @@ Proxy runs on the Node runtime.
 | Defaults are the fallback, not a leftover constant | With all three env vars unset, limiter behaves as 60000ms/60/10; with `RATE_LIMIT_AUTH=3` set, the 4th `/login` POST in a window returns 429 | true |
 | Caddyfile exists and targets app | `test -f Caddyfile && grep -q 'reverse_proxy .*app:3000' Caddyfile` | true |
 | App publishes no port | `app` service has no `ports:` key in `docker-compose.yml` | true |
-| db publishes no port | `db` service has no `ports:` key | true |
+| db is loopback-only | `db` port mapping begins `127.0.0.1:` | true |
 | No default credentials | `! grep -q 'postgres:postgres' docker-compose.yml` | true |
 | Trust-boundary comment updated | `grep -qi 'caddy' src/proxy.ts` | true |
 | TLS precondition retracted | DEPLOYMENT.md no longer says "do not create accounts for the team" | true |
@@ -193,7 +193,7 @@ Proxy runs on the Node runtime.
 
 | # | Question | Impact | Default Chosen by Spec | Planning Effect |
 |---|----------|--------|------------------------|-----------------|
-| 1 | Remove the `db` port mapping outright, or bind it to loopback `127.0.0.1:${DB_PORT}:5432`? | Non-blocking | **Literal removal**, per the locked criterion P8-7. Host-side migrations move to `docker compose exec`, which DEPLOYMENT.md:129 already documents as supported | If the user prefers loopback, only the compose line and one DEPLOYMENT.md paragraph change; plan structure is unaffected |
+| 1 | ~~Remove the `db` port mapping outright, or bind it to loopback?~~ **RESOLVED** | — | **Loopback bind.** Plan critique established that literal removal has no working replacement in the shipped image (no `bash`/`psql` in alpine; `bootstrap:admin` refuses non-interactive exec). User confirmed loopback. This is a deliberate, documented deviation from P8-7's wording 'the host-published db port is removed' — the exposure it targets is closed, the port is no longer reachable off-host | 08-03 binds to loopback; 08-04 keeps the host procedures rather than rewriting them as exec |
 | 2 | Does `@next/codemod@canary` exist and behave for `middleware-to-proxy`? | Non-blocking | **Attempt it, then diff and hand-correct.** If unavailable offline, hand-migrate — the rename is mechanical; the risk is comment loss, not logic | Plan 08-01 must treat the codemod as best-effort with a hand-migration fallback |
 | 3 | Should the Caddy site address be an env var or literal in the `Caddyfile`? | Non-blocking | **Env var** (`{$SITE_ADDRESS}`), added to `.env.example`, so the committed file carries no MSP-specific hostname | Adds one `.env.example` entry to plan 08-03 |
 | 4 | `npm run db:migrate:deploy` chains `scripts/post-migrate.sh`, which sources `.env`. Does it work under `docker compose exec`? | Non-blocking | **Verify during 08-04** and document whichever invocation works | 08-04 gains a verification step rather than a code change |

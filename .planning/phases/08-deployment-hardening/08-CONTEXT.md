@@ -39,7 +39,7 @@ See the spec's Requirements table (P8-1 … P8-8).
 | Spec pipeline | **Run** — produced `.planning/specs/08-deployment-hardening-spec.md` | User, plan step 3.6 |
 | TLS challenge | HTTP-01, stock `caddy:alpine` | Exploration doc, session 2 |
 | Ordering | Proxy migration **before** env-read rate limits | Edge inlines `process.env` at build time; Node reads at runtime |
-| `db` port | Literal removal (P8-7); migrations via `docker compose exec` | Spec Open Question 1 — loopback bind is the recorded alternative |
+| `db` port | **Loopback bind `127.0.0.1:${DB_PORT}:5432`** (revised after critique) | Literal removal strands migrations, seed, bootstrap and E2E — alpine has no `bash`/`psql`, and `bootstrap:admin` refuses non-interactive exec. Loopback closes the exposure and keeps host tooling working |
 | Codemod | Best-effort, then diff and hand-correct | ~180 lines of load-bearing comments will not survive a codemod |
 | `auth.config.ts` | Keep the split; correct only the docstring | Split is still good design after Edge stops being a constraint |
 
@@ -56,6 +56,26 @@ See the spec's Requirements table (P8-1 … P8-8).
 4. **`AUTH_URL` must become `https://`** or Auth.js issues a non-Secure cookie over TLS.
    Changing the scheme logs every existing session out once — expected, not a defect.
 5. **`POSTGRES_PASSWORD` applies only at initdb.** An existing volume needs `ALTER USER`.
+6. **Generate the password URL-safely** (`openssl rand -hex 32`). It is embedded in the
+   `DATABASE_URL` URI, where base64's `/ + =` break parsing — and `db` starts healthy
+   regardless, so only `app` fails.
+7. **Compose `.env` does not reach containers.** `app.environment` enumerates its keys, so
+   08-03 must plumb `RATE_LIMIT_*` through explicitly or 08-02's reads are always `undefined`
+   in the shipped topology and the control silently stays at its defaults.
+8. **`AUTH_URL` must fail fast in compose.** Auth.js picks the `__Secure-` cookie prefix from
+   `url.protocol` alone, so an unset `AUTH_URL` behind TLS yields a non-Secure cookie with no
+   error — and 08-04 retracts the onboarding precondition on exactly that condition.
+
+## Plan critique
+
+Run 2026-09-15 (pre-mortem + assumption hunting, read-only). Verdict **REWORK**: 5 CRITICAL
+findings, all verified against the actual files and all fixed in the plan text before
+execution. In short: base64 passwords break the `DATABASE_URL` URI; `RATE_LIMIT_*` never
+reached the container; literal `db` port removal had no working replacement; nothing
+mechanically proved the Caddy header directive landed; and `AUTH_URL`'s http default
+survived the phase. Also fixed: verification commands that could never match their own
+prescribed implementation, greps already satisfied at HEAD, and scope checks that could not
+see new files and exited 0 either way.
 
 ## Plan structure
 
@@ -68,6 +88,13 @@ See the spec's Requirements table (P8-1 … P8-8).
 
 Wave 2's two plans touch disjoint files and run in parallel. `src/proxy.ts` is written by
 08-01, 08-02 and 08-04 — never by two plans in the same wave.
+
+**Each wave is committed before the next begins, and wave 2's two plans execute in separate
+worktrees.** Without this the scope checks are meaningless: two agents in one tree each see
+the other's edits and report SCOPE VIOLATION for work they did not do, and an agent that
+"fixes" it by reverting destroys the prior wave. The checks use `git status --porcelain`
+(not `git diff`, which cannot see new files like `Caddyfile`) and exit non-zero on a real
+violation.
 
 ## Explicitly NOT in scope
 

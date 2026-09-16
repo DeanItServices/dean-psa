@@ -66,9 +66,18 @@ const authMiddleware = NextAuth(authConfig).auth;
 // whatever arrived with Caddy's own observation of the peer. Before that,
 // docker-compose.yml published `app` on 3000 with no proxy in front of it
 // and this limiter was a no-op against anyone willing to forge a fresh IP
-// per request. Two conditions carry the guarantee and are both ways to
-// lose it: Caddy must stay the only route in, and the Docker daemon must
-// preserve source addresses (see getClientIp()).
+// per request.
+//
+// FOUR conditions carry that guarantee, and each is a way to lose it. They
+// are enumerated ONCE, on getClientIp() below, and deliberately not
+// restated here: this short form previously claimed there were "two",
+// naming only Caddy-as-sole-ingress and Docker source-address fidelity. It
+// silently dropped the `header_up X-Forwarded-For {remote_host}` line --
+// which is precisely the condition `caddy validate` invites an operator to
+// delete ("Unnecessary header_up X-Forwarded-For") -- and predated the
+// fronting-proxy condition entirely. A reader who trusted the short list
+// would have deleted a load-bearing line believing it was covered. Read
+// the list on getClientIp() before changing anything in front of this app.
 
 // OPERATOR-TUNABLE, READ FROM THE ENVIRONMENT AT PROCESS START.
 //
@@ -229,22 +238,39 @@ function cleanupStaleEntries(now: number) {
  * adding that line. Also verified: with `trusted_proxies 0.0.0.0/0` AND
  * `header_up` set, upstream still saw only the peer address.
  *
- * ONE SHARP EDGE, MEASURED: the Caddyfile overwrites X-Forwarded-For and
- * ONLY X-Forwarded-For. A forged `X-Real-IP` passes straight through to
- * this function (verified: forging both through the shipped config, the
- * upstream saw `X-Forwarded-For: <peer>` but `X-Real-IP: 66.66.66.66`).
- * That is harmless ONLY because the order below reads x-forwarded-for
- * first and Caddy sets it on every proxied request, so the x-real-ip
- * branch is unreachable in the shipped topology. Do not reorder these two
- * checks, and do not "simplify" them into a first-non-empty-of-either
- * lookup: either change hands the attacker the key again.
+ * ONE SHARP EDGE, MEASURED: as of the measurement below, the Caddyfile
+ * overwrote X-Forwarded-For and ONLY X-Forwarded-For, so a forged
+ * `X-Real-IP` passed straight through to this function (verified: forging
+ * both through the shipped config, the upstream saw
+ * `X-Forwarded-For: <peer>` but `X-Real-IP: 66.66.66.66`).
  *
- * THREE CONDITIONS CARRY THE CLAIM. Each is a way to lose it:
+ * CHECK THE CADDYFILE RATHER THAN THIS PARAGRAPH for whether that is still
+ * true: if a `header_up X-Real-IP {remote_host}` line has since been added
+ * alongside the X-Forwarded-For one, that second header is overwritten too
+ * and the pass-through is closed at the proxy. If it has not, the finding
+ * above stands as written. This function is correct EITHER WAY, and for the
+ * same reason in both: the order below reads x-forwarded-for first, and
+ * Caddy sets that header on every proxied request, so the x-real-ip branch
+ * is unreachable in the shipped topology whatever the Caddyfile does with
+ * X-Real-IP.
  *
- *   1. Caddy stays the only ingress. Re-publishing `app`'s 3000 to the
- *      host, or reaching it from another container on the Compose network,
- *      restores the original exposure verbatim for whoever can do it.
- *   2. The `header_up` line stays in the Caddyfile.
+ * What that reachability argument depends on is the ORDER, so treat it as
+ * load-bearing: do not reorder these two checks, and do not "simplify" them
+ * into a first-non-empty-of-either lookup. Either change hands the attacker
+ * the key again on any deployment whose proxy does not also own X-Real-IP.
+ *
+ * FOUR CONDITIONS CARRY THE CLAIM. Each is a way to lose it. Conditions 1
+ * and 2 are what keep a forged header out; conditions 3 and 4 are what keep
+ * the value that survives from collapsing every client into one bucket:
+ *
+ *   1. Nothing BYPASSES Caddy -- it stays the only ingress. Re-publishing
+ *      `app`'s 3000 to the host, or reaching it from another container on
+ *      the Compose network, restores the original exposure verbatim for
+ *      whoever can do it.
+ *   2. The `header_up` line stays in the Caddyfile. `caddy validate` emits
+ *      "Unnecessary header_up X-Forwarded-For" and invites its deletion;
+ *      that lint is wrong here, for the `trusted_proxies` reason measured
+ *      above.
  *   3. The Docker daemon preserves source addresses. `{remote_host}` is
  *      whichever peer Caddy accepted the connection from; with standard
  *      iptables DNAT that is the real client. If the daemon routes
@@ -255,6 +281,30 @@ function cleanupStaleEntries(now: number) {
  *      alike. Worth checking after go-live: `docker compose logs caddy`
  *      should show varied `remote_ip` values, not one repeated gateway
  *      address.
+ *   4. Nothing is placed IN FRONT OF Caddy. Condition 1 is about reaching
+ *      the app without passing through Caddy; this one is the opposite
+ *      topology and is just as easy to arrive at by accident -- putting
+ *      Cloudflare, an edge nginx, a corporate WAF or any other proxy ahead
+ *      of it. Then `{remote_host}` is that fronting proxy's address, the
+ *      same value on every request, and `header_up` faithfully writes it
+ *      over the real chain. DEMONSTRATED by chaining two Caddys: every
+ *      real-client request arrived upstream as one identical address.
+ *      This is NOT a forgery bypass -- a client-supplied X-Forwarded-For is
+ *      still dropped, so nobody gains a fresh bucket per request -- it is
+ *      condition 3's failure mode by a different route: one shared bucket
+ *      for the whole internet, i.e. the severe lockout, with POST /login on
+ *      the tight limit and staff locked out alongside the attacker.
+ *      REMEDY, if something must front Caddy: `header_up X-Forwarded-For
+ *      {remote_host}` is no longer the right directive, because the real
+ *      client address now only exists in the chain the fronting proxy
+ *      sends. Replace it with a `trusted_proxies <CIDR>` configuration
+ *      naming exactly that proxy's addresses -- never `private_ranges` as a
+ *      reflex, and never `0.0.0.0/0` -- and revisit the parsing below,
+ *      since with a forwarded chain position 0 is client-supplied again and
+ *      the correct entry is counted from the right-hand (trusted) end. Do
+ *      not make that change on the assumption it is harmless: it is exactly
+ *      the configuration measured above to hand position 0 back to the
+ *      attacker when the trusted set is too wide.
  *
  * STILL TRUE, and closed by none of the above: `rateLimitStore` is a
  * per-process, in-memory Map. It resets on container restart and is correct

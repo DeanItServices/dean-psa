@@ -120,9 +120,9 @@ Three consequences worth stating explicitly:
 
    **Auth**
    - `AUTH_SECRET` — generate with `npx auth secret` or `openssl rand -base64 32`. Required; compose refuses to start without it. Optionally `AUTH_SECRET_1`, `AUTH_SECRET_2` and `AUTH_SECRET_3` hold *retired* secrets during a rotation: `AUTH_SECRET` signs new sessions, the numbered slots are decode-only, so sessions minted under the old value keep working until you drop the slot. To rotate, move the current value into `AUTH_SECRET_1`, put the new one in `AUTH_SECRET`, restart `app`, and drop the slot once every session older than the 8-hour max age has expired. Leave them unset unless you are mid-rotation. (This works only because `src/auth.config.ts` sets Auth.js's `secret` explicitly — Auth.js does not read these slots by itself in a next-auth app, and its own ordering would treat the highest-numbered slot as the signing secret. See `src/lib/auth-secrets.ts`.)
-   - `AUTH_URL` — **required, no default, and shipped blank.** The public `https://` URL this deployment is reachable at, matching `SITE_ADDRESS` (e.g. `https://psa.yourmsp.com`), with no trailing slash. Compose fails fast if it is unset. It must be `https://`: Auth.js decides whether to use the `__Secure-` cookie prefix from this URL's protocol alone, so an `http://` value behind TLS silently issues a non-Secure session cookie with no error anywhere. That is the single condition the onboarding guidance below depends on.
+   - `AUTH_URL` — **required, no default, and shipped blank.** The public `https://` URL this deployment is reachable at, matching `SITE_ADDRESS` (e.g. `https://psa.yourmsp.com`), with no trailing slash. Compose fails fast if it is unset. It must be `https://`: Auth.js decides whether to use the `__Secure-` cookie prefix from this URL's protocol alone, and that protocol beats the `X-Forwarded-Proto` header Caddy sets, so an `http://` value behind TLS is not rescued by the proxy. This deployment no longer leaves that to chance — see "the cookie downgrade itself is no longer left to the guard" below — but `AUTH_URL` should still be correct, because it is also the URL Auth.js builds its own callbacks from.
 
-     **Two things the `${AUTH_URL:?}` guard does not do for you.** It checks *presence*, not shape — `http://...`, a wrong hostname, or a trailing slash all pass it silently. And it only helps if the value is actually absent, which is why `.env.example` ships this blank alongside `POSTGRES_PASSWORD`, `SITE_ADDRESS` and `AUTH_SECRET`: an example value left in place by an operator who skimmed the file would satisfy the guard and start the stack on somebody else's hostname. Verify the result rather than the input — see the cookie-name check under "Creating the first admin account".
+     **Two things the `${AUTH_URL:?}` guard does not do for you.** It checks *presence*, not shape — `http://...`, a wrong hostname, or a trailing slash all pass the compose guard. And it only helps if the value is actually absent, which is why `.env.example` ships this blank alongside `POSTGRES_PASSWORD`, `SITE_ADDRESS` and `AUTH_SECRET`: an example value left in place by an operator who skimmed the file would satisfy the guard and start the stack on somebody else's hostname. Verify the result rather than the input — see the cookie-name check under "Creating the first admin account".
 
      **The cookie downgrade itself is no longer left to the guard.** `src/auth.config.ts` pins `useSecureCookies: true` whenever `NODE_ENV=production`, which the shipped image sets, so the `__Secure-` prefix and the `Secure` attribute hold in production regardless of what `AUTH_URL`'s scheme says. The failure mode for a mistyped `http://` is now a login that does not complete — the browser will not return a Secure cookie over plaintext — rather than a session cookie that silently travels in the clear. If logins fail right after go-live, read `docker compose logs app --since 5m | grep '\[proxy\]'`: a `[proxy] AUTH_URL uses http://` line is the explanation. Fail closed, with the reason in the log.
    - `AUTH_TRUST_HOST` — leave `true` unless you have a specific reason to change it; required for Auth.js to trust the host header behind a reverse proxy, which this deployment now always has.
@@ -295,7 +295,7 @@ This works because the `db` service publishes `127.0.0.1:${DB_PORT:-5432}:5432` 
 
 ## Rotating the database password
 
-`POSTGRES_PASSWORD` is applied by **initdb only** — the very first time the `pgdata` volume is created. On any deployment where that volume already exists, editing `.env` and restarting changes the credential the `app` and `email-poller` containers *present* and nothing about the credential Postgres *accepts*. The result is a stack where `db` reports healthy, `app` fails to connect, and nothing anywhere says "the password you set was ignored". This is the procedure that actually rotates it.
+`POSTGRES_PASSWORD` is applied by **initdb only** — the very first time the `pgdata` volume is created. On any deployment where that volume already exists, editing `.env` and restarting changes the credential the `app` and `email-poller` containers *present* and nothing about the credential Postgres *accepts*. The result is a stack where `db` is up and accepting connections, `app` fails to connect, and nothing anywhere says "the password you set was ignored". (`db` does not report *healthy* — nothing in this stack defines a healthcheck; see "Build and start".) This is the procedure that actually rotates it.
 
 1. **Change it inside the running database first**, using the credential that still works:
 
@@ -346,7 +346,15 @@ The alternative — deleting the `pgdata` volume so initdb runs again with the n
 >
 > **That is now closed.** Caddy terminates TLS in front of the app, `app` publishes no host port at all, and `http://` is redirected to `https://`. **Onboarding may proceed — on one condition:**
 >
-> - **`AUTH_URL` must be an `https://` URL.** Auth.js picks the `__Secure-` session-cookie prefix from that URL's protocol *alone*; an `http://` value behind a TLS front end yields a non-Secure cookie with no error and no warning anywhere, which puts you back in the position the paragraph above describes. `docker-compose.yml` now declares `AUTH_URL` with no default, so a stack with it unset refuses to start rather than leaving this to operator discipline — but a stack with it set to `http://...` will start happily. Check it, do not assume it.
+> - **`AUTH_URL` must be an `https://` URL.** Auth.js picks the `__Secure-` session-cookie prefix from that URL's protocol *alone*, ahead of any `X-Forwarded-Proto` header. `docker-compose.yml` declares `AUTH_URL` with no default, so a stack with it unset refuses to start — but a stack with it set to `http://...` starts happily, and the compose guard cannot tell the difference.
+>
+>   **Two things now catch that, so you are not relying on the manual check below.** `src/auth.config.ts` pins `useSecureCookies: true` under `NODE_ENV=production` (which the shipped image sets), so the `Secure` attribute holds whatever the scheme says — the failure becomes a login that will not complete rather than a cookie in the clear. And `src/proxy.ts` logs `[proxy] AUTH_URL uses http:// ...` once at startup. If logins fail immediately after go-live, that line is the first thing to look for:
+>
+>   ```bash
+>   docker compose logs app --since 5m | grep '\[proxy\]'
+>   ```
+>
+>   Check the cookie name anyway — it is the only end-to-end confirmation, and it has never been executed in this project.
 >
 > Verify before you hand out the first credential: log in once and look at the session cookie in your browser's developer tools. **`__Secure-authjs.session-token`** is correct. A bare **`authjs.session-token`** means `AUTH_URL` is not `https://` — fix that and restart `app` before onboarding anyone.
 >
@@ -505,13 +513,14 @@ docker compose restart app   # restart one service in place
 docker compose down          # stop AND REMOVE containers + the network; volumes SURVIVE
 ```
 
-`docker compose down` is safe: `pgdata`, `caddy_data` and `caddy_config` are named volumes and are **not** removed. `docker compose up -d` afterwards brings everything back with its data intact.
+`docker compose down` is safe: `pgdata`, `caddy_data`, `caddy_config` and `poller_state` are named volumes and are **not** removed. `docker compose up -d` afterwards brings everything back with its data intact.
 
 > ### `docker compose down -v` destroys this deployment's data
 >
 > The `-v` flag removes the named volumes too. That is **two keystrokes** from the safe form above, and it deletes:
 >
 > - **`pgdata`** — every ticket, client, contract, invoice, time entry and user account. There is no undo and this repository ships no automated backup that would cover you.
+> - **`poller_state`** — the email poller's watermark. Losing it is the quietest of the three: `scripts/email-poller.ts` deliberately does not backfill, so it resumes from `now()` and **every message that arrived before the volume was destroyed is never turned into a ticket**, with no error and no gap report. Only relevant if you run the `email` profile, and only destroyed by `-v` (verified).
 > - **`caddy_data`** — the issued TLS certificate **and the ACME account key**. Re-issuance then happens from scratch on the next request, which counts against [Let's Encrypt's rate limits](https://letsencrypt.org/docs/rate-limits/) (notably 5 duplicate certificates per week). Repeatedly recreating a stack can lock you out of issuance for days, with the site serving no TLS meanwhile.
 >
 > If your goal is "restart cleanly", `docker compose down && docker compose up -d` already does that. Reach for `-v` only to deliberately destroy a deployment that has never held real data. The same applies to `docker volume prune` and `docker system prune --volumes`.
@@ -539,15 +548,16 @@ docker compose exec -T db psql -U postgres -d msp_psa \
 docker compose start app
 ```
 
-> **Why `stop app` and not "restore into a running stack".** The dump begins with `--clean` statements that need an `AccessExclusiveLock`. One idle `app` container holding an ordinary `AccessShareLock` is enough to block the very first `ALTER TABLE`, and the restore then **hangs with no output** — measured: `wait_event_type=Lock` on statement 1, killed at a 120s timeout. Worse, the queued exclusive-lock request blocks every subsequent application query behind it, so attempting recovery takes the site down harder than the incident did. Earlier revisions of this document said "restore into a running stack"; that instruction was wrong.
+> **Why `stop app` and not "restore into a running stack".** The dump begins with `--clean` statements that need an `AccessExclusiveLock`. One idle `app` container holding an ordinary `AccessShareLock` is enough to block the very first `ALTER TABLE`, and the restore then **hangs with no further output** (it prints its short `SET` preamble first, then stops) — measured: `wait_event_type=Lock` on the first `ALTER TABLE`, killed at a 120s timeout. Worse, the queued exclusive-lock request blocks every subsequent application query behind it, so attempting recovery takes the site down harder than the incident did. Earlier revisions of this document said "restore into a running stack"; that instruction was wrong.
 >
 > `--single-transaction` is the second half: without it, a failure partway through `ON_ERROR_STOP=1` leaves a half-dropped schema with no way back. With it, a failed restore rolls back to the pre-restore state.
 
-Three things the database dump does **not** cover:
+Four things the database dump does **not** cover:
 
 1. **`.env`** — `POSTGRES_PASSWORD`, `AUTH_SECRET` and every integration secret. Back it up separately, encrypted, mode `0600` at rest, and never into the same bucket as the dump.
 2. **`TOKEN_ENCRYPTION_KEY` specifically.** QuickBooks access/refresh tokens are stored encrypted in the database, so a dump restored **without** the matching key leaves those rows undecryptable and the QBO connection must be re-established at `/admin/quickbooks`. The database being intact is not sufficient.
 3. **`caddy_data`.** Not worth backing up — Caddy re-issues — but see the rate-limit warning above before destroying it casually.
+4. **`poller_state`.** Only relevant on an `email`-profile deployment. It is a single timestamp, so it is not worth a backup either — but restoring a database dump does **not** rewind the poller, and the two can disagree: mail polled after the dump was taken is gone from the restored database while the watermark still says it was processed. After any restore on a poller deployment, stop the poller, delete `poller_state`, and let it resume from `now()` rather than re-reading mail it has no tickets for.
 
 **An untested backup is not a backup.** Restore one into a scratch stack (a separate `DB_PORT`, a separate project name via `-p`) and log in against it before you rely on this procedure. Nobody in this phase has done so — the commands above are correct by construction, not by observation.
 

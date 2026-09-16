@@ -53,10 +53,13 @@ services:
       # surfaces at the first login attempt -- i.e. after go-live -- instead of
       # at `up`.
       - AUTH_SECRET=${AUTH_SECRET:?AUTH_SECRET is required - generate with npx auth secret}
-      # Secret-rotation slots. src/lib/session.ts:53-55 reads all three off
-      # process.env and puts them AHEAD of AUTH_SECRET so tokens minted under a
-      # retired secret still decode. Bare keys (list form) because they are
-      # normally unset. Omitting them here is the same failure the QBO block
+      # Secret-rotation slots, holding RETIRED secrets during a rotation.
+      # authSecrets() in src/lib/auth-secrets.ts reads all three off process.env
+      # and appends them AFTER the current AUTH_SECRET, so a token minted under a
+      # retired secret still decodes while new ones are signed with the current
+      # one. (Symbol name, not a line number, deliberately: the previous citation
+      # here went stale within one commit.) Bare keys (list form) because they
+      # are normally unset. Omitting them here is the same failure the QBO block
       # below describes: the reads return undefined inside the container no
       # matter what .env says, and a rotation logs every user out instead of
       # rolling over cleanly.

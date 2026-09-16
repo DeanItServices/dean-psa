@@ -146,7 +146,7 @@ Notable: `users.ts` (5), `tickets.ts` (5), `time-entries.ts` (4), `invoices.ts` 
 | `TOKEN_ENCRYPTION_KEY` | `src/lib/crypto.ts` | Yes (QBO) |
 | `QBO_CLIENT_ID`, `QBO_CLIENT_SECRET`, `QBO_REDIRECT_URI`, `QBO_ENVIRONMENT` | `src/lib/qbo.ts` | QBO only |
 | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `MAILBOX_ADDRESS` | `scripts/email-poller.ts` (fails fast) | Poller only |
-| `ALLOW_SEED_IN_PRODUCTION` | `prisma/seed.ts` | Escape hatch |
+| `ALLOW_DEMO_SEED` | `prisma/seed.ts` | Required opt-in. The seed refuses everywhere without an exact `ALLOW_DEMO_SEED=true` on the command line; `ALLOW_SEED_IN_PRODUCTION` is no longer read at all |
 | `E2E_BASE_URL`, `E2E_PORT` | `e2e/target.ts` | E2E only |
 | `DB_PORT`, `NODE_ENV`, `CI` | Compose / tooling | No |
 
@@ -201,7 +201,7 @@ npm install
 npx prisma generate            # required on the host after checkout
 docker compose up -d db
 npm run db:migrate             # prisma migrate dev
-npm run db:seed                # five role accounts
+ALLOW_DEMO_SEED=true npm run db:seed   # five role accounts (opt-in is required)
 npm run bootstrap:admin        # or create/reset the first admin directly
 npm run dev                    # http://localhost:3000
 ```

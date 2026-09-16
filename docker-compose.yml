@@ -6,10 +6,10 @@
 #
 # TRADE-OFF, and it is a real one: this bounds the ONLY audit trail this product
 # has. Admin-account changes are unstructured lines in the `app` container's
-# stdout, and the `[proxy]` configuration warnings are printed once at process
-# start -- both can now be rotated away. DEPLOYMENT.md says so, and tells you to
-# read those warnings immediately after a restart rather than whenever. Ship the
-# logs off-host if you have a retention obligation.
+# stdout, and the `[proxy]` configuration warnings are printed once per process
+# (on the first matched request) -- both can now be rotated away. DEPLOYMENT.md
+# says so, and gives a check that makes the line appear before looking for it.
+# Ship the logs off-host if you have a retention obligation.
 x-default-logging: &default-logging
   driver: json-file
   options:
@@ -71,7 +71,7 @@ services:
       # alone (src/lib/session.ts), with no error to notice.
       - AUTH_URL=${AUTH_URL:?AUTH_URL is required and must be the public https URL, e.g. https://psa.example.com}
       - AUTH_TRUST_HOST=${AUTH_TRUST_HOST:-true}
-      # Optional rate-limit overrides read by src/proxy.ts at process start.
+      # Optional rate-limit overrides read by src/proxy.ts once per process.
       # Compose's .env interpolates this file only and never reaches a
       # container, so these must be enumerated here or the reads are always
       # undefined and the limiter silently stays at its defaults.

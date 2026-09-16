@@ -49,3 +49,13 @@ yarn-error.log*
 next-env.d.ts
 
 /src/generated/prisma
+
+# database dumps
+# DEPLOYMENT.md's backup command writes msp_psa-<timestamp>.sql, and every
+# command in that document runs from the repository root -- so without this a
+# full dump of every ticket, client, invoice and password hash sits untracked in
+# the working tree and is swept up by `git add -A`.
+#
+# Deliberately NOT a blanket `*.sql`: prisma/migrations/**/migration.sql are
+# tracked files, and a blanket rule would silently ignore every new migration.
+msp_psa-*.sql

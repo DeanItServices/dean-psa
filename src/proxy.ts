@@ -79,11 +79,18 @@ const authMiddleware = NextAuth(authConfig).auth;
 // would have deleted a load-bearing line believing it was covered. Read
 // the list on getClientIp() before changing anything in front of this app.
 
-// OPERATOR-TUNABLE, READ FROM THE ENVIRONMENT AT PROCESS START.
+// OPERATOR-TUNABLE, READ FROM THE ENVIRONMENT ONCE PER PROCESS.
 //
-// The three constants below are resolved ONCE, at module load -- i.e. when the
-// Node.js server process starts -- and never re-read per request. Retuning one
-// therefore costs a container restart, not a rebuild.
+// The three constants below are resolved ONCE, at module load, and never
+// re-read per request. Retuning one therefore costs a container restart, not a
+// rebuild.
+//
+// "Module load" is NOT server boot. Next.js instantiates this module lazily, on
+// the first MATCHED request -- measured on Next 16.3.3: `next start` reaches
+// "Ready" with no [proxy] line in the log, and both warnings below appear only
+// after the first request, then never again for the life of the process. That
+// matters to anyone reading the log for them: a restart alone produces nothing
+// to find. DEPLOYMENT.md's tuning check sends a request first for this reason.
 //
 // This is only *genuinely* runtime-read because of the runtime move. Proxy runs
 // on the Node.js runtime, and that is not configurable
@@ -136,7 +143,8 @@ function envInt(name: string, fallback: number): number {
   return parsed;
 }
 
-// AUTH_URL shape check, run once at process start.
+// AUTH_URL shape check, run once per process -- on the first matched request,
+// not at server boot (see the note on module load above).
 //
 // docker-compose.yml guards AUTH_URL with `${AUTH_URL:?}`, but Compose can only
 // check PRESENCE -- `http://psa.example.com` satisfies it. Auth.js then decides

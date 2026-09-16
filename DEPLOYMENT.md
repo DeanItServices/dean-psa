@@ -73,7 +73,7 @@ Three consequences worth stating explicitly:
 
   If this command prints **nothing at all**, the `log` directive is missing from the `Caddyfile` — Caddy emits zero per-request logs without it, and the check silently reads as "nothing wrong". Confirm with `grep -c '^\s*log$' Caddyfile`.
 - **It is still a speed bump, not a production-grade or distributed limiter.** The counter is per-process and in-memory: it resets on container restart, and a second `app` replica would track its own independent counters, effectively multiplying the real limit by the replica count. For a defense-in-depth layer in front of it, Caddy's own `rate_limit` module or an upstream WAF is the place to add one.
-- **The thresholds are operator-tunable at runtime.** `RATE_LIMIT_WINDOW_MS` (default `60000`), `RATE_LIMIT_GENERAL` (default `60`) and `RATE_LIMIT_AUTH` (default `10`) are read from the environment when the `app` process starts. All three are optional; leave them unset to keep the defaults. See "Rate-limit threshold tuning" under "Operational notes" for the procedure — it needs a restart, not a rebuild.
+- **The thresholds are operator-tunable at runtime.** `RATE_LIMIT_WINDOW_MS` (default `60000`), `RATE_LIMIT_GENERAL` (default `60`) and `RATE_LIMIT_AUTH` (default `10`) are read from the environment once per `app` process. All three are optional; leave them unset to keep the defaults. See "Rate-limit threshold tuning" under "Operational notes" for the procedure — it needs a restart, not a rebuild.
 
 ---
 
@@ -128,7 +128,7 @@ Three consequences worth stating explicitly:
    - `AUTH_TRUST_HOST` — leave `true` unless you have a specific reason to change it; required for Auth.js to trust the host header behind a reverse proxy, which this deployment now always has.
 
    **Rate limiting** — all optional; leave unset to keep the defaults:
-   - `RATE_LIMIT_WINDOW_MS` (default `60000`), `RATE_LIMIT_GENERAL` (default `60`), `RATE_LIMIT_AUTH` (default `10`). Read by `src/proxy.ts` when the `app` process starts. A value that is not a positive integer — including `0` — is rejected with a warning in `docker compose logs app` and the default is used instead: a typo cannot disable rate limiting.
+   - `RATE_LIMIT_WINDOW_MS` (default `60000`), `RATE_LIMIT_GENERAL` (default `60`), `RATE_LIMIT_AUTH` (default `10`). Read by `src/proxy.ts` once per `app` process. A value that is not a positive integer — including `0` — is rejected with a warning in `docker compose logs app` and the default is used instead: a typo cannot disable rate limiting.
 
    **Microsoft Graph API (email-to-ticket poller)** — required only if the `email-poller` service will be used, and **all four together or none**:
    - `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` — from an Azure AD app registration with `Mail.Read` (or `Mail.ReadWrite`) **application** permission, with admin consent granted.
@@ -203,11 +203,11 @@ docker compose --profile email up -d
 > | `logs email-poller` | yes — works, exits 0 |
 > | `restart` | **no** — the poller keeps its old uptime |
 > | `stop` | **no** — ⚠ the poller keeps running |
-> | `down` | **no** — ⚠ the poller keeps running; the network removal fails with `Resource is still in use` |
+> | `down` | **no** — ⚠ the poller keeps running; the network removal fails with `Resource is still in use`, **and the command still exits 0** |
 >
-> The two marked ⚠ are the ones that bite: **`docker compose stop` and `docker compose down` do not stop the poller** unless you pass the flag, so a shutdown you believe is complete leaves a container holding live Azure credentials and a live database connection. Always shut down with `docker compose --profile email down` (or with `COMPOSE_PROFILES=email` exported) on a deployment that runs the poller, and check `docker ps` afterwards.
+> The two marked ⚠ are the ones that bite: **`docker compose stop` and `docker compose down` do not stop the poller** unless you pass the flag, so a shutdown you believe is complete leaves a container holding live Azure credentials and a live database connection. Always shut down with `docker compose --profile email down` (or with `COMPOSE_PROFILES=email` exported) on a deployment that runs the poller, and check `docker ps` afterwards — the exit status will not tell you, since the failed `down` returns 0. (`COMPOSE_PROFILES=email` in `.env` does work and is the durable fix; `COMPOSE_PROJECT_NAME` is not a substitute.)
 >
-> **Two caveats on the table.** First, it is invocation-dependent: passing an explicit `-p <project>` — or setting `COMPOSE_PROJECT_NAME` in your environment or in `.env`, which reaches the same code path — flips the `stop`/`down`/`restart` rows, and those commands then **do** include the profiled service. Most commands in this document use the implicit, directory-derived project name, which is what the table measures; the backup-verification step under "Backups" is the one place that deliberately uses `-p`, and a per-worktree convention may put `COMPOSE_PROJECT_NAME` in your `.env`. Check which case you are in before relying on a row.
+> **Two caveats on the table.** First, it is invocation-dependent: passing an explicit **`-p <project>` flag** flips the `stop`/`down`/`restart` rows, and those commands then **do** include the profiled service. It is the flag itself, not the project name: passing `-p` with the same name the directory already derives still flips them. `COMPOSE_PROJECT_NAME` in your environment or `.env` does **not** — measured, it behaves like the no-flag column and leaves the poller running. Most commands in this document use the implicit, directory-derived name, which is what the table measures; the backup-verification step under "Backups" is the one place that deliberately passes `-p`.
 >
 > Second, it is a single measurement on one Compose build, not a promise about yours. Treat the table as the evidence for the advice, not as a prediction: **always pass `--profile email` (or export `COMPOSE_PROFILES=email`), and always confirm with `docker ps` afterwards.** That instruction is correct whichever way your Compose version behaves.
 
@@ -348,7 +348,7 @@ The alternative — deleting the `pgdata` volume so initdb runs again with the n
 >
 > - **`AUTH_URL` must be an `https://` URL.** Auth.js picks the `__Secure-` session-cookie prefix from that URL's protocol *alone*, ahead of any `X-Forwarded-Proto` header. `docker-compose.yml` declares `AUTH_URL` with no default, so a stack with it unset refuses to start — but a stack with it set to `http://...` starts happily, and the compose guard cannot tell the difference.
 >
->   **Two things now catch that, so you are not relying on the manual check below.** `src/auth.config.ts` pins `useSecureCookies: true` under `NODE_ENV=production` (which the shipped image sets), so the `Secure` attribute holds whatever the scheme says — the failure becomes a login that will not complete rather than a cookie in the clear. And `src/proxy.ts` logs `[proxy] AUTH_URL uses http:// ...` once at startup. If logins fail immediately after go-live, that line is the first thing to look for:
+>   **Two things now catch that, so you are not relying on the manual check below.** `src/auth.config.ts` pins `useSecureCookies: true` under `NODE_ENV=production` (which the shipped image sets), so the `Secure` attribute holds whatever the scheme says — the failure becomes a login that will not complete rather than a cookie in the clear. And `src/proxy.ts` logs `[proxy] AUTH_URL uses http:// ...` once per process, on the first matched request — so if you are looking for it on a freshly restarted stack that has served no traffic, make a request first. If logins fail immediately after go-live the traffic has already happened, and that line is the first thing to look for:
 >
 >   ```bash
 >   docker compose logs app --since 5m | grep '\[proxy\]'
@@ -534,9 +534,19 @@ If you are running the email poller, add the profile flag so it is included: `do
 A manual logical dump, run on the host, needs no host-side `DATABASE_URL` because `pg_dump` runs inside the `db` container:
 
 ```bash
-docker compose exec -T db pg_dump -U postgres -d msp_psa --clean --if-exists \
-  > "msp_psa-$(date +%Y%m%d-%H%M%S).sql"
+BACKUP="msp_psa-$(date +%Y%m%d-%H%M%S).sql"
+if docker compose exec -T db pg_dump -U postgres -d msp_psa --clean --if-exists > "$BACKUP"; then
+  echo "backup ok: $BACKUP ($(wc -c < "$BACKUP") bytes)"
+else
+  echo "BACKUP FAILED -- removing the empty file"; rm -f "$BACKUP"
+fi
 ```
+
+> **Do not drop the `if`.** The shell creates the redirect target *before* `pg_dump` runs, so the bare `pg_dump ... > file` form leaves a **zero-byte file with a perfectly valid-looking timestamped name** whenever the dump fails — measured with `db` stopped: `pg_dump` exits 1, stderr says `service "db" is not running`, and `msp_psa-….sql` is sitting in the backup directory. A truncated dump is worse than an absent one: it opens with the same `-- PostgreSQL database dump` header, so a casual `head` passes. For a document whose own thesis is that an untested backup is not a backup, checking the exit status is the minimum.
+>
+> To sanity-check a dump you already have, look at the **last** line rather than the first: a complete dump ends with its own terminator (`\unrestrict …` on current `pg_dump`, `-- PostgreSQL database dump complete` on older ones). A file that ends mid-statement has neither.
+
+Dumps are written to whatever directory you run this from, which for every command in this document is the repository root. `.gitignore` covers `msp_psa-*.sql` so a dump is never committed by accident — but it is still an unencrypted copy of every ticket, client, invoice and password hash sitting in a checkout. Move it somewhere encrypted, and do not leave it there.
 
 Restore (this **overwrites** the current contents of `msp_psa`). **Stop the application first** — do not restore into a stack that is still serving:
 
@@ -548,7 +558,11 @@ docker compose exec -T db psql -U postgres -d msp_psa \
 docker compose start app
 ```
 
-> **Why `stop app` and not "restore into a running stack".** The dump begins with `--clean` statements that need an `AccessExclusiveLock`. One idle `app` container holding an ordinary `AccessShareLock` is enough to block the very first `ALTER TABLE`, and the restore then **hangs with no further output** (it prints its short `SET` preamble first, then stops) — measured: `wait_event_type=Lock` on the first `ALTER TABLE`, killed at a 120s timeout. Worse, the queued exclusive-lock request blocks every subsequent application query behind it, so attempting recovery takes the site down harder than the incident did. Earlier revisions of this document said "restore into a running stack"; that instruction was wrong.
+> **Why `stop app` and not "restore into a running stack".** The dump begins with `--clean` statements that need an `AccessExclusiveLock`, and **any** application session sitting in an open transaction holds a conflicting `AccessShareLock` that blocks it. The restore then prints its short `SET` preamble and **stops with no further output** until the transaction ends. Measured, so you can reproduce both halves: a connection that has run a query and gone genuinely idle (`pg_stat_activity.state = 'idle'`) holds **no** relation locks and the restore completes in about a second — but one session left `idle in transaction` blocks it indefinitely (killed at a timeout). A serving `app` opens and closes transactions continuously, so whether a restore succeeds or hangs is a race you do not want to run during an incident.
+>
+> An earlier revision of this note blamed "one idle `app` container". That was wrong — an idle backend holds nothing — and it is corrected here rather than quietly dropped, because the remedy is the same either way and the wrong reason invites someone to test it, find the restore completes, and skip the step. Worse, when it *does* block, the queued exclusive-lock request blocks every subsequent application query behind it, so attempting recovery takes the site down harder than the incident did. Earlier revisions also said "restore into a running stack"; that instruction was wrong.
+>
+> `--single-transaction` is what makes a blocked restore safe to kill: verified by killing one mid-flight, the database was left completely intact.
 >
 > `--single-transaction` is the second half: without it, a failure partway through `ON_ERROR_STOP=1` leaves a half-dropped schema with no way back. With it, a failed restore rolls back to the pre-restore state.
 
@@ -559,7 +573,9 @@ Four things the database dump does **not** cover:
 3. **`caddy_data`.** Not worth backing up — Caddy re-issues — but see the rate-limit warning above before destroying it casually.
 4. **`poller_state`.** Only relevant on an `email`-profile deployment. It is a single timestamp, so it is not worth a backup either — but restoring a database dump does **not** rewind the poller, and the two can disagree: mail polled after the dump was taken is gone from the restored database while the watermark still says it was processed. After any restore on a poller deployment, stop the poller, delete `poller_state`, and let it resume from `now()` rather than re-reading mail it has no tickets for.
 
-**An untested backup is not a backup.** Restore one into a scratch stack (a separate `DB_PORT`, a separate project name via `-p`) and log in against it before you rely on this procedure. Nobody in this phase has done so — the commands above are correct by construction, not by observation.
+**An untested backup is not a backup.** Restore one into a scratch stack (a separate `DB_PORT`, a separate project name via `-p`) and log in against it before you rely on this procedure — on *your* data, which is the only test that counts.
+
+The procedure itself is no longer unobserved. It was round-tripped end to end during Phase 8 review: dump, delete rows, run the restore block verbatim, and the users came back, `/login` answered 200, and the `TimeEntry_one_active_timer_per_user` partial index returned with the dump (it is carried in the dump, so no `post-migrate.sh` re-run is needed afterwards). A restore killed mid-flight left the database completely intact, which is what `--single-transaction` is there for.
 
 ### After a host reboot
 
@@ -571,7 +587,7 @@ No `restart:` policy is set on any service. Nothing comes back on its own: run `
 
 - **`DB_PORT` per-environment convention**: still meaningful. The `db` service publishes `127.0.0.1:${DB_PORT:-5432}:5432` — loopback-scoped rather than removed, so Postgres is reachable from this host (which `db:migrate:deploy`, `db:seed`, `bootstrap:admin` and the E2E suite all need) and from nowhere else on the network. `.env.example` documents `DB_PORT` as a value to vary per checkout/worktree so multiple instances of this stack (e.g. a staging environment alongside production on the same host) don't collide on the same host Postgres port; that convention keeps working unchanged. For a single production deployment the default `5432` is fine. If you stand up a second instance, give it a distinct `DB_PORT` (e.g. `5433`) and a distinct `DATABASE_URL` to match — and distinct `HTTP_PORT`/`HTTPS_PORT`, remembering that ACME needs the real public ports — only the stack holding :80 can answer HTTP-01, and only the stack holding :443 can answer TLS-ALPN-01, so a second stack on `8080`/`8443` gets no publicly-trusted certificate at all.
 
-- **Rate-limit threshold tuning**: the thresholds are read from the environment when the `app` process starts, so retuning them costs a restart — **not** a rebuild, and no source edit. The three variables and their defaults:
+- **Rate-limit threshold tuning**: the thresholds are read from the environment once per `app` process, so retuning them costs a restart — **not** a rebuild, and no source edit. The three variables and their defaults:
 
   | Variable | Default | Applies to |
   |----------|---------|------------|
@@ -587,7 +603,14 @@ No `restart:` policy is set on any service. Nothing comes back on its own: run `
 
   Compose recreates the container with the new environment; there is no `docker compose build` step. All three are optional — leave them unset and the defaults above apply, which is the documented, silent path.
 
-  Raise `RATE_LIMIT_GENERAL` if legitimate traffic from a NAT'd office (many technicians sharing one public IP) is being throttled; lower `RATE_LIMIT_AUTH` to tighten brute-force protection on an internet-exposed deployment. A value that is not a positive integer is **rejected**, not obeyed: `0`, a negative, a fraction, an empty string or anything non-numeric falls back to the default and logs a `[proxy]` warning naming the variable, the offending value and the default applied. Check the log **immediately after the restart that should have produced the line**, with `docker compose logs app --since 5m | grep '\[proxy\]'` — these warnings are printed once at process start, and container logs are capped (see "Log retention" below), so an old warning can be rotated away and read as a clean result. A typo cannot disable rate limiting, but it can leave you thinking a change took effect when it did not.
+  Raise `RATE_LIMIT_GENERAL` if legitimate traffic from a NAT'd office (many technicians sharing one public IP) is being throttled; lower `RATE_LIMIT_AUTH` to tighten brute-force protection on an internet-exposed deployment. A value that is not a positive integer is **rejected**, not obeyed: `0`, a negative, a fraction, an empty string or anything non-numeric falls back to the default and logs a `[proxy]` warning naming the variable, the offending value and the default applied. Check for the warning like this, after the restart:
+
+  ```bash
+  curl -s -o /dev/null http://127.0.0.1/            # make the proxy module load
+  docker compose logs app --since 5m | grep '\[proxy\]'
+  ```
+
+  **The request is not optional.** These warnings are emitted once per process, and Next.js instantiates the proxy module lazily on the first matched request — measured on Next 16.3.3: a freshly restarted `app` logs nothing at all until traffic arrives. An operator who restarts during a maintenance window and greps the log before re-admitting traffic gets an empty result and concludes the value was accepted. `--since` guards the other end: container logs are capped (see "Log retention" below), so an old warning can be rotated away and also read as clean. A typo cannot disable rate limiting, but it can leave you thinking a change took effect when it did not.
 
 - **Ownership-scoped ticket delete has no UI entry point**: Phase 6 added an ownership check to `deleteTicket` (a `technician` may only delete a ticket assigned to them; `dispatcher`/`admin` are unrestricted) at the Server Action level, but no delete button, menu, or affordance exists anywhere in the UI to invoke it — confirmed by a full-project search finding zero references to `deleteTicket` outside its own definition. This is not a deployment blocker (the function is simply unreachable, not broken), but operators should be aware that "ticket deletion" is not currently an available feature through the UI at all, for any role, despite the underlying authorization logic being in place.
 

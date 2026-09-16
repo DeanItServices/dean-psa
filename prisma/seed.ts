@@ -139,7 +139,7 @@ function assertSeedingIsIntended(): void {
   );
 }
 
-async function main() {
+async function main(): Promise<void> {
   assertSeedingIsIntended();
 
   // Say out loud what the opt-in just authorised. An operator who set the

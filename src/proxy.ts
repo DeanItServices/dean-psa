@@ -232,7 +232,7 @@ const rateLimitStore = new Map<string, RateLimitEntry>();
 let requestsSinceCleanup = 0;
 const CLEANUP_INTERVAL_REQUESTS = 500;
 
-function cleanupStaleEntries(now: number) {
+function cleanupStaleEntries(now: number): void {
   requestsSinceCleanup += 1;
   if (requestsSinceCleanup < CLEANUP_INTERVAL_REQUESTS) return;
   requestsSinceCleanup = 0;
@@ -509,48 +509,47 @@ export default function proxy(request: NextRequest, event: NextFetchEvent) {
   return handleAfterRateLimit();
 
   function handleAfterRateLimit() {
+    if (isAuthRoute || isLoginRoute) {
+      return NextResponse.next();
+    }
 
-  if (isAuthRoute || isLoginRoute) {
-    return NextResponse.next();
-  }
-
-  // authMiddleware is NextAuth(authConfig).auth, the same value the previous
-  // `export default NextAuth(authConfig).auth` exposed directly to Next.js's
-  // request-gate runtime -- Next.js itself always invokes the default export
-  // with (request, event), so calling it the same way here preserves
-  // identical behavior for every non-/api/auth/* route.
-  //
-  // THE CAST IS STILL REQUIRED UNDER THE NODE RUNTIME -- RE-DERIVED, NOT
-  // COPIED. next-auth 5.0.0-beta.32 types `auth` as an intersection of five
-  // call signatures (node_modules/next-auth/index.d.ts:209-211):
-  //
-  //   (NextApiRequest, NextApiResponse)            => Promise<Session | null>
-  //   ()                                           => Promise<Session | null>
-  //   (GetServerSidePropsContext)                  => Promise<Session | null>
-  //   ((NextAuthRequest, AppRouteHandlerFnContext) => ...) => AppRouteHandlerFn
-  //   (NextAuthMiddleware)                         => NextMiddleware
-  //
-  // Exactly ONE of those accepts two arguments, and it is the Pages Router
-  // `(NextApiRequest, NextApiResponse)` one. There is no
-  // `(NextRequest, NextFetchEvent)` signature to resolve to at all -- the
-  // last two overloads take a single *handler function* and return one. So
-  // `authMiddleware(request, event)` type-checks against the Pages Router
-  // signature and fails; verified in this tree by deleting the cast and
-  // running `npx tsc --noEmit`, which reports:
-  //   src/proxy.ts: error TS2345: Argument of type 'NextRequest' is not
-  //   assignable to parameter of type 'NextApiRequest'.
-  //
-  // This is a next-auth v5 typing limitation about *which* Next.js entry
-  // point is being described, not a runtime mismatch, so the Edge -> Node
-  // move does not affect it. Cast to the actual runtime call shape Next.js
-  // uses to invoke the Proxy default export. `NextProxy` is next/server's
-  // Next.js 16 name for that shape; `NextMiddleware`, which this cast used
-  // before, is the identical type but carries an @deprecated tag
-  // (node_modules/next/dist/server/web/types.d.ts:51-63).
-  const authAsMiddleware = authMiddleware as unknown as (
-    req: NextRequest,
-    ev: NextFetchEvent,
-  ) => ReturnType<import("next/server").NextProxy>;
+    // authMiddleware is NextAuth(authConfig).auth, the same value the previous
+    // `export default NextAuth(authConfig).auth` exposed directly to Next.js's
+    // request-gate runtime -- Next.js itself always invokes the default export
+    // with (request, event), so calling it the same way here preserves
+    // identical behavior for every non-/api/auth/* route.
+    //
+    // THE CAST IS STILL REQUIRED UNDER THE NODE RUNTIME -- RE-DERIVED, NOT
+    // COPIED. next-auth 5.0.0-beta.32 types `auth` as an intersection of five
+    // call signatures (node_modules/next-auth/index.d.ts:209-211):
+    //
+    //   (NextApiRequest, NextApiResponse)            => Promise<Session | null>
+    //   ()                                           => Promise<Session | null>
+    //   (GetServerSidePropsContext)                  => Promise<Session | null>
+    //   ((NextAuthRequest, AppRouteHandlerFnContext) => ...) => AppRouteHandlerFn
+    //   (NextAuthMiddleware)                         => NextMiddleware
+    //
+    // Exactly ONE of those accepts two arguments, and it is the Pages Router
+    // `(NextApiRequest, NextApiResponse)` one. There is no
+    // `(NextRequest, NextFetchEvent)` signature to resolve to at all -- the
+    // last two overloads take a single *handler function* and return one. So
+    // `authMiddleware(request, event)` type-checks against the Pages Router
+    // signature and fails; verified in this tree by deleting the cast and
+    // running `npx tsc --noEmit`, which reports:
+    //   src/proxy.ts: error TS2345: Argument of type 'NextRequest' is not
+    //   assignable to parameter of type 'NextApiRequest'.
+    //
+    // This is a next-auth v5 typing limitation about *which* Next.js entry
+    // point is being described, not a runtime mismatch, so the Edge -> Node
+    // move does not affect it. Cast to the actual runtime call shape Next.js
+    // uses to invoke the Proxy default export. `NextProxy` is next/server's
+    // Next.js 16 name for that shape; `NextMiddleware`, which this cast used
+    // before, is the identical type but carries an @deprecated tag
+    // (node_modules/next/dist/server/web/types.d.ts:51-63).
+    const authAsMiddleware = authMiddleware as unknown as (
+      req: NextRequest,
+      ev: NextFetchEvent,
+    ) => ReturnType<import("next/server").NextProxy>;
 
     return authAsMiddleware(request, event);
   }

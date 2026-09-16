@@ -73,6 +73,35 @@ function describeDiff(
   return changed.length > 0 ? `${email}: ${changed.join(", ")}` : null;
 }
 
+/**
+ * The seeded-fixture checks that hold whether or not a baseline was recorded,
+ * returned in the order they are reported. Extracted alongside describeDiff so
+ * globalTeardown reads as the checks it runs rather than their implementations.
+ */
+function describeInvariantFailures(after: FixtureSnapshot): string[] {
+  const failures: string[] = [];
+
+  for (const { email, role } of SEEDED_FIXTURES) {
+    const row = after[email];
+    if (!row) {
+      failures.push(`${email}: seeded fixture is missing from the database.`);
+      continue;
+    }
+    // Absolute invariants, checked whether or not a baseline exists: these
+    // are the properties the other three specs depend on to log in at all.
+    if (!row.isActive) failures.push(`${email}: seeded fixture is deactivated.`);
+    if (row.mustChangePassword) {
+      failures.push(`${email}: seeded fixture is flagged for a password change.`);
+    }
+    if (!row.hasPassword) failures.push(`${email}: seeded fixture has no password.`);
+    if (row.role !== role) {
+      failures.push(`${email}: seeded fixture role is "${row.role}", expected "${role}".`);
+    }
+  }
+
+  return failures;
+}
+
 export default async function globalTeardown(): Promise<void> {
   const problems: string[] = [];
   /** Divergences from the seeded values that were already there at setup. */
@@ -89,23 +118,7 @@ export default async function globalTeardown(): Promise<void> {
 
     const after = await readFixtureSnapshot();
 
-    for (const { email, role } of SEEDED_FIXTURES) {
-      const row = after[email];
-      if (!row) {
-        problems.push(`${email}: seeded fixture is missing from the database.`);
-        continue;
-      }
-      // Absolute invariants, checked whether or not a baseline exists: these
-      // are the properties the other three specs depend on to log in at all.
-      if (!row.isActive) problems.push(`${email}: seeded fixture is deactivated.`);
-      if (row.mustChangePassword) {
-        problems.push(`${email}: seeded fixture is flagged for a password change.`);
-      }
-      if (!row.hasPassword) problems.push(`${email}: seeded fixture has no password.`);
-      if (row.role !== role) {
-        problems.push(`${email}: seeded fixture role is "${row.role}", expected "${role}".`);
-      }
-    }
+    problems.push(...describeInvariantFailures(after));
 
     // A MISSING BASELINE IS A FAILURE, NOT A WARNING. It used to downgrade to
     // console.warn on a fixed $TMPDIR path, which meant the headline guarantee

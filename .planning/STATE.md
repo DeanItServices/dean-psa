@@ -1,10 +1,10 @@
 # Project State
 
 ## Current Position
-- **Phase**: 8 of 9 (reviewed, PASSED)
+- **Phase**: 8 of 9 (Shipped)
 - **Status**: Phase 8 complete and reviewed -- 4 plans across 3 waves, then 4 review cycles. 11 blockers found and closed, each verified by execution. See `phases/08-deployment-hardening/08-REVIEW.md`.
-- **Last Activity**: Phase 8 review complete (2026-09-16), final commit `54ff304`
-- **Next Action**: Phase 9, or open a PR for Phase 8
+- **Last Activity**: Phase 8 shipped 2026-09-16 — PR #23
+- **Next Action**: Merge PR #23, then `/legion:plan 9` for Verification & Debt Closure
 
 ## Progress
 ```
@@ -18,6 +18,7 @@
 - Phase 7 issue: https://github.com/DeanItServices/dean-psa/issues/19 (closed)
 - Phase 7 PR: https://github.com/DeanItServices/dean-psa/pull/20 (merged 2026-09-03)
 - Phase 8 issue: https://github.com/DeanItServices/dean-psa/issues/22
+- Phase 8 PR: https://github.com/DeanItServices/dean-psa/pull/23 (open)
 
 ## Recent Decisions
 - **Phase 8 execution complete (2026-09-16)**: all 4 plans passed across 3 waves. 08-01 and 08-02 Complete, 08-03 Complete with Warnings (one stale plan assertion, since corrected), 08-04 Complete. Every plan's claims were re-verified independently by the coordinator rather than accepted from the agent reports.

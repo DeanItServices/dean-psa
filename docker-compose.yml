@@ -1,3 +1,21 @@
+# Docker's default json-file log driver has NO size limit, and every container
+# here writes to the same filesystem as the pgdata volume -- so any service that
+# logs in a loop, or that an unauthenticated client can make log (Caddy writes a
+# line per request BEFORE authentication), is a path to a full disk and a
+# Postgres that cannot write. Cap all four the same way.
+#
+# TRADE-OFF, and it is a real one: this bounds the ONLY audit trail this product
+# has. Admin-account changes are unstructured lines in the `app` container's
+# stdout, and the `[proxy]` configuration warnings are printed once at process
+# start -- both can now be rotated away. DEPLOYMENT.md says so, and tells you to
+# read those warnings immediately after a restart rather than whenever. Ship the
+# logs off-host if you have a retention obligation.
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   caddy:
     image: caddy:alpine
@@ -17,18 +35,7 @@ services:
       - caddy_config:/config
     depends_on:
       - app
-    # Docker's default json-file driver has NO size limit, and Caddy's `log`
-    # directive (Caddyfile) writes one line per request BEFORE any
-    # authentication -- so an unauthenticated client can grow this file as fast
-    # as it can send requests. It shares a filesystem with the pgdata volume,
-    # which makes an unbounded access log a path to a full disk and a Postgres
-    # that cannot write. Cap it. `docker compose logs caddy` still works; it
-    # just keeps 50 MB of history instead of all of it.
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "5"
+    logging: *default-logging
   app:
     build: .
     # No ports: the app is reachable only on the internal Compose network, at
@@ -84,12 +91,7 @@ services:
       - QBO_ENVIRONMENT
       - QBO_REDIRECT_URI
       - TOKEN_ENCRYPTION_KEY
-    # Same unbounded-json-file reason as caddy above.
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "5"
+    logging: *default-logging
     depends_on:
       - db
   email-poller:
@@ -120,6 +122,7 @@ services:
       - EMAIL_POLLER_STATE_DIR=/state
     volumes:
       - poller_state:/state
+    logging: *default-logging
     depends_on:
       - db
   db:
@@ -138,6 +141,7 @@ services:
       - "127.0.0.1:${DB_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    logging: *default-logging
 volumes:
   pgdata:
   caddy_data:

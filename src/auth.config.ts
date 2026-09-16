@@ -1,4 +1,5 @@
 import type { NextAuthConfig } from "next-auth";
+import { authSecrets } from "@/lib/auth-secrets";
 
 /**
  * Minimal Auth.js base config, kept free of database and crypto dependencies.
@@ -26,11 +27,41 @@ import type { NextAuthConfig } from "next-auth";
  *    Credentials-only provider list -- see src/auth.ts).
  *
  * Do not add providers, adapters, or database/crypto imports here.
+ * (src/lib/auth-secrets.ts is neither -- it reads process.env and nothing
+ * else, with no database, crypto or Node-only dependency.)
  */
 export const authConfig: NextAuthConfig = {
   pages: {
     signIn: "/login",
   },
+  // Set explicitly because next-auth otherwise assigns AUTH_SECRET as a bare
+  // string and closes the gate on @auth/core's own AUTH_SECRET_1..3 handling
+  // -- so without this line the rotation slots reach the container and are
+  // then ignored by the request gate, signIn and signOut, and any rotation
+  // logs every signed-in user out. The full mechanism, the runtime evidence
+  // and why the order is deliberately the reverse of upstream's are in
+  // src/lib/auth-secrets.ts. An empty list leaves Auth.js to raise its own
+  // MissingSecret, which is the correct behaviour for an unconfigured
+  // deployment.
+  secret: authSecrets(),
+  // Enforce the Secure session cookie in production rather than inferring it.
+  //
+  // @auth/core decides the `__Secure-` prefix and the Secure attribute from
+  // `config.useSecureCookies ?? url.protocol === "https:"`, where the URL comes
+  // from AUTH_URL -- and AUTH_URL takes absolute precedence over the
+  // X-Forwarded-Proto header Caddy sets, so an operator who writes
+  // `AUTH_URL=http://...` gets a bare, non-Secure session cookie behind TLS with
+  // nothing reporting it. Compose's ${AUTH_URL:?} guard cannot catch it either:
+  // it checks presence, not scheme.
+  //
+  // Pinning this to true in production takes the decision away from a value an
+  // operator can typo. A genuinely plaintext production deployment now fails at
+  // login (the browser will not return a Secure cookie over http) instead of
+  // silently issuing a replayable one -- fail closed at the boundary.
+  // warnOnInsecureAuthUrl() in src/proxy.ts logs the explanation for that
+  // failure. Development is unaffected: the gate is NODE_ENV only, so
+  // http://localhost keeps working.
+  useSecureCookies: process.env.NODE_ENV === "production" ? true : undefined,
   providers: [],
   callbacks: {
     authorized({ auth }) {

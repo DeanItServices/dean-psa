@@ -153,24 +153,29 @@ function warnOnInsecureAuthUrl(): void {
   if (process.env.NODE_ENV !== "production") return;
   const raw = process.env.AUTH_URL;
   if (raw === undefined || raw.trim() === "") return; // compose's :? guard owns this case
-  let protocol: string;
+  let parsed: URL;
   try {
-    protocol = new URL(raw.trim()).protocol;
+    parsed = new URL(raw.trim());
   } catch {
     console.warn(
-      `[proxy] AUTH_URL=${JSON.stringify(raw)} is not a parseable URL. ` +
-        "Auth.js derives the __Secure- session-cookie prefix from its protocol, " +
-        "so this deployment may issue a non-Secure session cookie.",
+      "[proxy] AUTH_URL is set but is not a parseable URL. Auth.js derives the " +
+        "__Secure- session-cookie prefix from its protocol, so this deployment may " +
+        "issue a non-Secure session cookie. (The value is not echoed here -- check " +
+        "AUTH_URL in your .env.)",
     );
     return;
   }
-  if (protocol !== "https:") {
+  if (parsed.protocol !== "https:") {
+    // Echo the scheme and host only, never `raw`: an AUTH_URL carrying userinfo
+    // (https://user:pass@host) would otherwise be written to the app log verbatim.
     console.warn(
-      `[proxy] AUTH_URL=${JSON.stringify(raw)} is not https://. In production this ` +
-        "makes Auth.js issue a session cookie WITHOUT the __Secure- prefix and without " +
-        "the Secure attribute, so it travels over plain HTTP. Set AUTH_URL to the public " +
-        "https:// URL and restart. Verify by checking the cookie name in devtools after " +
-        "logging in: it must be __Secure-authjs.session-token.",
+      `[proxy] AUTH_URL uses ${parsed.protocol}// (host ${parsed.host}), not https://. ` +
+        "In production this makes Auth.js issue a session cookie WITHOUT the __Secure- " +
+        "prefix, so it travels over plain HTTP. Set AUTH_URL to the public https:// URL " +
+        "and restart. Note the app also forces Secure cookies in production " +
+        "(src/auth.config.ts), so with a non-https AUTH_URL login will FAIL rather than " +
+        "silently downgrade -- that is the intended fail-closed behaviour, and this " +
+        "warning is the explanation for it.",
     );
   }
 }

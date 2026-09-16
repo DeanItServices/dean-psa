@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { getToken } from "next-auth/jwt";
 import type { JWT } from "next-auth/jwt";
 import { db } from "@/lib/db";
+import { authSecrets } from "@/lib/auth-secrets";
 
 /**
  * Request-scoped lookup of the authoritative user row.
@@ -35,12 +36,16 @@ const findSessionUser = cache(async (id: string) => {
 });
 
 /**
- * The decryption secret list, assembled exactly the way @auth/core assembles
- * it from the environment (its setEnvDefaults pushes AUTH_SECRET, then
- * unshifts AUTH_SECRET_1..3): the rotation slots first, then the current
- * AUTH_SECRET, so a token minted under any live secret still decodes.
- * Reproduced rather than imported because @auth/core applies it to a config
- * object we have no handle on from here.
+ * The decryption secret list for this request's cookie.
+ *
+ * Delegates to the shared list in src/lib/auth-secrets.ts, which is the SAME
+ * array src/auth.config.ts hands Auth.js. That shared list matters: this
+ * function used to reproduce @auth/core's own assembly order, on the
+ * assumption that Auth.js was applying it too. It was not -- next-auth
+ * assigns AUTH_SECRET as a string before core can build the rotation array,
+ * so the numbered slots were honoured HERE and nowhere else. Reading the same
+ * list from one place is what keeps this module and the request gate from
+ * disagreeing about which cookies are valid.
  *
  * Throws rather than returning an empty list. With no secret the token cannot
  * be decoded at all, which would resolve every caller to null and read as
@@ -49,12 +54,7 @@ const findSessionUser = cache(async (id: string) => {
  * this state, so this can only fire on a misconfigured deployment.
  */
 function sessionSecrets(): string[] {
-  const secrets = [
-    process.env.AUTH_SECRET_3,
-    process.env.AUTH_SECRET_2,
-    process.env.AUTH_SECRET_1,
-    process.env.AUTH_SECRET,
-  ].filter((secret): secret is string => typeof secret === "string" && secret.length > 0);
+  const secrets = authSecrets();
 
   if (secrets.length === 0) {
     throw new Error(

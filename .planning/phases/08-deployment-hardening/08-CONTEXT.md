@@ -73,9 +73,33 @@ findings, all verified against the actual files and all fixed in the plan text b
 execution. In short: base64 passwords break the `DATABASE_URL` URI; `RATE_LIMIT_*` never
 reached the container; literal `db` port removal had no working replacement; nothing
 mechanically proved the Caddy header directive landed; and `AUTH_URL`'s http default
-survived the phase. Also fixed: verification commands that could never match their own
-prescribed implementation, greps already satisfied at HEAD, and scope checks that could not
-see new files and exited 0 either way.
+survived the phase. Also fixed **in the plan files**: several verification
+commands that could never match their own prescribed implementation, several greps already
+satisfied at HEAD, and scope checks that could not see new files and exited 0 either way.
+
+**Scope of that sweep, corrected 2026-09-16 (review cycle 2).** The sweep covered the plan
+files only, and was not exhaustive even there. One instance of each of the first two classes
+survived into execution:
+
+- **A check that could never match its implementation.** The spec's acceptance-check table
+  — `.planning/specs/08-deployment-hardening-spec.md`, listed above as a source of record
+  — required `grep -q 'process.env.RATE_LIMIT_WINDOW_MS' src/proxy.ts`. 08-02 implemented
+  the reads as `process.env[name]` inside `envInt()`, so that literal appears nowhere in the
+  file: `grep -c 'process.env.RATE_LIMIT_WINDOW_MS' src/proxy.ts` returns `0`. The plans were
+  corrected; **the spec was not swept at all.** Now corrected in place.
+- **A grep already satisfied at HEAD.** `08-04-PLAN.md`'s frontmatter carried
+  `grep -qi 'caddy' src/proxy.ts` as its *only* mechanical check on its central deliverable,
+  the trust-boundary rewrite — and the pre-08-04 file already matched, because the old
+  warning named Caddy in its list of proxies that could enforce the boundary
+  (`git show 84a5332:src/proxy.ts | grep -in caddy` → one hit at `:199`). Its companion
+  `grep -qi 'bootstrap:admin' DEPLOYMENT.md` matched 7 times at `84a5332`. Both are now
+  replaced with checks the pre-08-04 text cannot satisfy.
+
+The scope-check class was genuinely fixed — every plan that has one now uses
+`git status --porcelain` rather than `git diff`, and so can see new files like `Caddyfile`.
+Two limits of that form remain, recorded in `08-03-SUMMARY.md`: the check passes vacuously
+on a clean tree, and its allow-list does not cover the plan file's own self-correction.
+`08-02-PLAN.md` has no scope check at all.
 
 ## Plan structure
 

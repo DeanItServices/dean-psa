@@ -108,7 +108,47 @@ User-approved. **08-04 documents this as the topology of record.**
 
 ## Verification
 
-31 commands run, 30 passed, 1 failed.
+31 commands run, 30 passed, 1 failed — **as measured before the plan file was
+self-corrected.** This tally does not describe the committed tree; see the two notes below
+before reproducing it.
+
+**The tally predates the `08-03-PLAN.md` edit, and that edit is not a declared exception.**
+Commit `84a5332` also modified
+`.planning/phases/08-deployment-hardening/08-03-PLAN.md` (the stale-assertion correction
+described below), which is **not** listed in this plan's `files_modified`. Nothing in
+`08-03-PLAN.md` or `08-CONTEXT.md` declares plan self-correction an allowed exception —
+`grep -rn -i 'exception' .planning/phases/08-deployment-hardening/08-03-PLAN.md
+.planning/phases/08-deployment-hardening/08-CONTEXT.md` returns nothing. The scope check
+allow-lists only `Caddyfile`, `docker-compose.yml`, `.env.example`, so **re-run against the
+tree as committed it prints `SCOPE VIOLATION` and exits 1**, making the honest tally for the
+committed tree **29 of 31**. The four paths it would flag:
+
+```
+$ git show --name-only --format= 84a5332 | grep -vE '^(Caddyfile|docker-compose\.yml|\.env\.example)$'
+.planning/ROADMAP.md
+.planning/STATE.md
+.planning/phases/08-deployment-hardening/08-03-PLAN.md
+.planning/phases/08-deployment-hardening/08-03-SUMMARY.md
+```
+
+**The scope check also passes vacuously on a clean tree.** Its form is
+
+```
+git status --porcelain | awk '{print $2}' | grep -qvE '^(Caddyfile|docker-compose\.yml|\.env\.example)$' \
+  && { echo "SCOPE VIOLATION"; exit 1; } || echo "scope ok"
+```
+
+With no modifications, `git status --porcelain` emits nothing, `grep -qv` therefore matches
+nothing and exits 1, the `&&` branch is skipped and the `||` branch prints `scope ok`:
+
+```
+$ printf '' | grep -qvE '^(Caddyfile)$'; echo $?
+1
+```
+
+So `scope ok` means "no path outside the allow-list changed" **or** "nothing changed at
+all" — the check cannot distinguish the two, and would report success against a tree where
+the plan's work was never done.
 
 The failure is this plan's own `<verification>` line asserting `'ports' not in s['db']` —
 the literal-removal wording the approved deviation supersedes. The executor correctly

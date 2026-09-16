@@ -149,13 +149,13 @@ Proxy runs on the Node runtime.
 | Matcher preserved byte-for-byte | `grep -qF '"/((?!_next/static|_next/image|favicon.ico).*)"' src/proxy.ts` | true |
 | Typecheck clean | `npx tsc --noEmit` | true |
 | Lint clean | `npm run lint` | true |
-| Limits are env-read | `grep -q 'process.env.RATE_LIMIT_WINDOW_MS' src/proxy.ts` | true |
+| Limits are env-read | `grep -q 'envInt("RATE_LIMIT_WINDOW_MS"' src/proxy.ts` — **corrected 2026-09-16.** This row previously read `grep -q 'process.env.RATE_LIMIT_WINDOW_MS' src/proxy.ts`, which can never match: 08-02 implemented the reads as `process.env[name]` inside `envInt()`, so the literal appears nowhere in the file (`grep -c 'process.env.RATE_LIMIT_WINDOW_MS' src/proxy.ts` → `0`). The plan critique corrected the equivalent checks in the plan files but not here. | true |
 | Defaults are the fallback, not a leftover constant | With all three env vars unset, limiter behaves as 60000ms/60/10; with `RATE_LIMIT_AUTH=3` set, the 4th `/login` POST in a window returns 429 | true |
 | Caddyfile exists and targets app | `test -f Caddyfile && grep -q 'reverse_proxy .*app:3000' Caddyfile` | true |
 | App publishes no port | `app` service has no `ports:` key in `docker-compose.yml` | true |
 | db is loopback-only | `db` port mapping begins `127.0.0.1:` | true |
 | No default credentials | `! grep -q 'postgres:postgres' docker-compose.yml` | true |
-| Trust-boundary comment updated | `grep -qi 'caddy' src/proxy.ts` | true |
+| Trust-boundary comment updated | `grep -qF 'header_up X-Forwarded-For {remote_host}' src/proxy.ts` **and** `! grep -q 'provides NO protection' src/proxy.ts` — **corrected 2026-09-16.** This row previously read `grep -qi 'caddy' src/proxy.ts`, which was already satisfied before the comment was rewritten: the old warning named Caddy in its list of proxies (`git show 84a5332:src/proxy.ts | grep -in caddy` → one hit at `:199`). The replacement pair cannot be satisfied by the old text — the positive check matches only the rewritten comment, the negated check fails on the old "provides NO protection" wording. | true |
 | TLS precondition retracted | DEPLOYMENT.md no longer says "do not create accounts for the team" | true |
 | initdb caveat documented | `grep -qi 'ALTER USER' DEPLOYMENT.md` | true |
 

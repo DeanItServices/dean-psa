@@ -11,10 +11,24 @@
 | File | Change |
 |------|--------|
 | `src/proxy.ts` | **Comments only.** Trust-boundary block rewritten (exposure → what closed it → three conditions that carry it → what is still true), plus the rate-limiter header note, the null-branch comment, and 08-02's flagged "thresholds are fixed" wording. |
-| `DEPLOYMENT.md` | Rewritten for the Caddy topology; onboarding precondition retracted; new sections for password rotation, TLS-on-first-request, Intuit re-registration, session logout, and the `set -a` prerequisite. +161/−77. |
+| `DEPLOYMENT.md` | Rewritten for the Caddy topology; onboarding precondition retracted; new sections for password rotation, TLS-on-first-request, Intuit re-registration, session logout, and the `set -a` prerequisite. +147/−24. |
 
 **Comments-only claim verified independently** by the coordinator with a comment/string-aware
-stripper: **85 executable lines byte-identical to HEAD**. `tsc --noEmit` and `lint` both 0.
+stripper: with comments and comment-like string content removed, the remaining executable text
+is **byte-identical to HEAD**. No line count is quoted here — the count depends entirely on the
+stripper's rules (whether blank lines and brace-only lines survive), and an independent reviewer's
+stripper produced a different number from the same file while confirming the same byte-identity.
+The reproducible form of the claim is the identity, not a tally. `tsc --noEmit` and `lint` both 0.
+
+Reproduce the diffstat above with:
+
+```
+$ git diff --numstat 84a5332..ff45331 -- DEPLOYMENT.md src/proxy.ts
+147	24	DEPLOYMENT.md
+102	53	src/proxy.ts
+```
+
+`src/proxy.ts`'s 102/53 is comment churn; the executable text is unchanged.
 
 ## Claim strength — the comment matches the evidence, not P8-5's wording
 
@@ -126,7 +140,8 @@ against the actual config.
 | Item | Why it is unowned |
 |------|-------------------|
 | **`header_up X-Real-IP {remote_host}`** | One-line defense-in-depth in `Caddyfile`; 08-03 owns that file |
-| **Cookie-name check never observed** | Needs a real deployment with public DNS |
+| **Cookie-name check never observed** | Needs a real deployment with public DNS. **Still unexecuted as of review cycle 2** — no execution has been added, so the `AUTH_URL`/`__Secure-` cookie-prefix failure mode in the spec remains asserted, not observed. |
+| **`08-02-PLAN.md` has no scope check** | It is the only Phase 8 plan whose `<verification>` block contains no `git status --porcelain` scope assertion (the block runs `tsc`, `lint` and five greps — reproduce with `sed -n '/<verification>/,/<\/verification>/p' `.planning/phases/08-deployment-hardening/08-02-PLAN.md`). `08-02-SUMMARY.md:28` nonetheless reports `scope: only src/proxy.ts`. That statement is **true** — `git show --stat 6185bd4` confirms the source diff is `src/proxy.ts` alone — but it was not produced by any listed command, so it is an unverified-by-construction line in an otherwise command-backed summary. Recorded, not fixed: 08-02's plan and summary are outside this cycle's remit. |
 | `src/lib/session.ts:166` "never from Edge middleware" | Wrong since 08-01; `src/lib/**` forbidden to every Phase 8 plan |
 | `e2e/fixtures.ts:42,46` reference deleted `src/middleware.ts` | `e2e/**` forbidden phase-wide |
 | `caddy:alpine` floating tag | Verified twice against v2.11.4; pinning a digest is a follow-up |

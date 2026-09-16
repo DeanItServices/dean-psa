@@ -180,22 +180,23 @@ Unit coverage remains a single file: `src/lib/__regression__/reporting.regressio
    publishes no host port, so reaching it means already being past Caddy or on the Compose
    network.
 
+3. **`ItemRef` hardcoded** to `{ value: "1" }` in `invoices.ts` — every QBO invoice line
+   points at the same item.
+4. **Three E2E specs have never run.** The `advisory` project is evidence, not a gate;
+   ROADMAP Phase 9 owns their first real run.
+5. **Unused Auth.js tables.** `Account` / `Session` / `VerificationToken` cannot be
+   populated under JWT + Credentials. Harmless, but misleading when reading the schema for
+   the session model.
+6. **`/admin/quickbooks` predates the gating convention** — it open-codes
+   `getCurrentUser()` + `can()` + manual redirects instead of `requireRole()`. Use it as a
+   layout model only, never as a gating model.
+
 **Closed by Phase 8** (recorded because these were this file's top three hotspots and a
 reader may remember them): `X-Forwarded-For` is no longer attacker-controlled — `app`
 publishes no port and the `Caddyfile` overwrites both address headers at the boundary;
 `src/middleware.ts` has been migrated to `src/proxy.ts`; and the default `postgres:postgres`
 credentials are gone, replaced by `${POSTGRES_PASSWORD:?}` at all three sites with the `db`
 port bound to `127.0.0.1`. See `ROADMAP.md` Phase 8.
-5. **`ItemRef` hardcoded** to `{ value: "1" }` in `invoices.ts` — every QBO invoice line
-   points at the same item.
-6. **Three E2E specs have never run.** The `advisory` project is evidence, not a gate;
-   ROADMAP Phase 9 owns their first real run.
-7. **Unused Auth.js tables.** `Account` / `Session` / `VerificationToken` cannot be
-   populated under JWT + Credentials. Harmless, but misleading when reading the schema for
-   the session model.
-8. **`/admin/quickbooks` predates the gating convention** — it open-codes
-   `getCurrentUser()` + `can()` + manual redirects instead of `requireRole()`. Use it as a
-   layout model only, never as a gating model.
 
 ## Setup / Runbook
 

@@ -7,8 +7,9 @@
 # TRADE-OFF, and it is a real one: this bounds the ONLY audit trail this product
 # has. Admin-account changes are unstructured lines in the `app` container's
 # stdout, and the `[proxy]` configuration warnings are printed once per process
-# (on the first matched request) -- both can now be rotated away. DEPLOYMENT.md
-# says so, and gives a check that makes the line appear before looking for it.
+# (on the first request Next routes, not at boot) -- both can now be rotated
+# away. DEPLOYMENT.md says so, and gives a check that makes the line appear
+# before looking for it.
 # Ship the logs off-host if you have a retention obligation.
 x-default-logging: &default-logging
   driver: json-file

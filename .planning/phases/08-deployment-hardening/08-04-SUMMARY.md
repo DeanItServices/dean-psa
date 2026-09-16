@@ -116,8 +116,16 @@ the team".
 
 **`docker compose up -d` was NOT run** (the `app` image build is `npm ci` + `next build`),
 and **the cookie-name check was NOT executed** — no built image, no public DNS, no issuable
-certificate. The plan's `<output>` asks for the observed cookie name; the accurate answer is
-**not executed**. This is the phase's largest remaining unverified assertion.
+certificate. The plan's `<output>` asks for the observed cookie name; the accurate answer at
+the time was **not executed**.
+
+> **Resolved in review cycle 4, and the check turned out to be the wrong check.** It was
+> executed against a production build: the cookie is `__Secure-authjs.session-token`. But it
+> is that in **both** arms — a correct `https://` `AUTH_URL` and a mistyped `http://` one
+> each return 302 and set the same `__Secure-` cookie — because `src/auth.config.ts` pins
+> `useSecureCookies` under `NODE_ENV=production`, so the URL's protocol is never consulted.
+> The check confirms `NODE_ENV`, not `AUTH_URL`. `DEPLOYMENT.md` and `.env.example` were
+> corrected accordingly; the `[proxy] AUTH_URL uses http://` log line is the only detector.
 
 What *was* run, against the real `Caddyfile` mounted read-only:
 

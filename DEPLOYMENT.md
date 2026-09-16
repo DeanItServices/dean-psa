@@ -387,7 +387,8 @@ The alternative — deleting the `pgdata` volume so initdb runs again with the n
 > **1. `AUTH_URL` must be an `https://` URL.** Compose rejects it when unset, but a value of `http://...` starts happily and the guard cannot tell the difference. It no longer affects the session cookie (see below), but Auth.js builds its callback and redirect URLs from it. The only detector is the startup warning:
 >
 > ```bash
-> curl -sk -o /dev/null "https://$SITE_ADDRESS/"      # the warning is lazy; see Operational notes
+> set -a; . ./.env; set +a                            # SITE_ADDRESS lives in .env, not your shell
+> curl -sfk -o /dev/null "https://$SITE_ADDRESS/" || echo "REQUEST FAILED - fix this before reading the log"
 > docker compose logs app --since 5m | grep '\[proxy\]'
 > ```
 >
@@ -538,9 +539,11 @@ Known gaps, intentional and documented in the specs themselves:
 ```bash
 docker compose stop          # stop containers, keep them and all volumes
 docker compose start         # bring them back
-docker compose restart app   # restart one service in place
+docker compose restart app   # restart one service IN PLACE -- keeps the old environment
 docker compose down          # stop AND REMOVE containers + the network; volumes SURVIVE
 ```
+
+> **`restart` does not pick up `.env` changes.** A container's environment is fixed when it is created, so `restart` reuses it and silently keeps the old values while printing `Started` and exiting 0 — measured. After editing `.env`, always use `docker compose up -d <service>`, which recreates. This matters most for `AUTH_SECRET` (see "Rotating `AUTH_SECRET`") and the `RATE_LIMIT_*` overrides, where the no-op is indistinguishable from success.
 
 `docker compose down` is safe: `pgdata`, `caddy_data`, `caddy_config` and `poller_state` are named volumes and are **not** removed. `docker compose up -d` afterwards brings everything back with its data intact.
 
@@ -576,9 +579,18 @@ else
 fi
 ```
 
-> **Do not drop the `if`.** The shell creates the redirect target *before* `pg_dump` runs, so the bare `pg_dump ... > file` form leaves a **zero-byte file with a perfectly valid-looking timestamped name** whenever the dump fails — measured with `db` stopped: `pg_dump` exits 1, stderr says `service "db" is not running`, and `msp_psa-….sql` is sitting in the backup directory. A truncated dump is worse than an absent one: it opens with the same `-- PostgreSQL database dump` header, so a casual `head` passes. For a document whose own thesis is that an untested backup is not a backup, checking the exit status is the minimum.
+> **Do not drop the `if`.** The shell creates the redirect target *before* `pg_dump` runs, so the bare `pg_dump ... > file` form leaves a **zero-byte file with a perfectly valid-looking timestamped name** whenever the dump fails — measured with `db` stopped: `pg_dump` exits 1, stderr says `service "db" is not running`, and `msp_psa-….sql` is sitting in the backup directory. A file named like last night's backup, holding nothing. For a document whose own thesis is that an untested backup is not a backup, checking the exit status is the minimum.
 >
-> To sanity-check a dump you already have, look at the **last** line rather than the first: a complete dump ends with its own terminator (`\unrestrict …` on current `pg_dump`, `-- PostgreSQL database dump complete` on older ones). A file that ends mid-statement has neither.
+> To sanity-check a dump you already have, look at the **last** lines rather than the first — a dump that died partway through still opens with a perfectly normal `-- PostgreSQL database dump` header. A complete dump from `pg_dump` 16 ends with both of these, in this order (measured on 16.15):
+>
+> ```
+> -- PostgreSQL database dump complete
+> --
+>
+> \unrestrict <token>
+> ```
+>
+> Older `pg_dump` versions emit the `complete` line without the `\unrestrict` line. Either way, a file that ends mid-statement has neither.
 
 Dumps are written to whatever directory you run this from, which for every command in this document is the repository root. `.gitignore` covers `msp_psa-*.sql` so a dump is never committed by accident — but it is still an unencrypted copy of every ticket, client, invoice and password hash sitting in a checkout. Move it somewhere encrypted, and do not leave it there.
 
@@ -639,10 +651,10 @@ Rotate when the secret may have been exposed — a leaked `.env`, a departed adm
 3. **Verify it actually took effect**, which is the step that separates the two cases:
 
    ```bash
-   docker compose exec app printenv AUTH_SECRET AUTH_SECRET_1
+   docker compose exec app sh -c 'printenv AUTH_SECRET | sha256sum; printenv AUTH_SECRET_1 | sha256sum'
    ```
 
-   Both must print, and `AUTH_SECRET` must be the new value. Then confirm a session predating the rotation still resolves: stay logged in in an existing browser tab and reload a page — you should not be sent to `/login`.
+   Two digests must print. Compare them against `printf '%s\n' "$NEW" | sha256sum` and the old value's digest — the first must match the new secret, the second the retired one. **Digests, not the values**: rotation is an incident activity and this is exactly the moment someone is screen-sharing, so do not `printenv` these straight to a terminal. (If a variable is unset, `printenv` prints nothing and you get the digest of an empty string, `e3b0c442…` — which is the failure signature for "the container was not recreated".) Then confirm a session predating the rotation still resolves: stay logged in in an existing browser tab and reload a page — you should not be sent to `/login`.
 
 4. **Drop the slot** once every session older than the 8-hour `maxAge` has expired: remove `AUTH_SECRET_1` from `.env` and run `docker compose up -d app` again.
 
@@ -671,13 +683,14 @@ Rotating `TOKEN_ENCRYPTION_KEY` has no equivalent safe procedure: QuickBooks tok
   Raise `RATE_LIMIT_GENERAL` if legitimate traffic from a NAT'd office (many technicians sharing one public IP) is being throttled; lower `RATE_LIMIT_AUTH` to tighten brute-force protection on an internet-exposed deployment. A value that is not a positive integer is **rejected**, not obeyed: `0`, a negative, a fraction, an empty string or anything non-numeric falls back to the default and logs a `[proxy]` warning naming the variable, the offending value and the default applied. Check for the warning like this, after the restart:
 
   ```bash
-  curl -sk -o /dev/null "https://$SITE_ADDRESS/"    # make the proxy module load
+  set -a; . ./.env; set +a                          # SITE_ADDRESS lives in .env, not your shell
+  curl -sfk -o /dev/null "https://$SITE_ADDRESS/" || echo "REQUEST FAILED - fix this before reading the log"
   docker compose logs app --since 5m | grep '\[proxy\]'
   ```
 
-  **The request is not optional, and it must be `https://`.** These warnings are emitted once per process, and Next.js instantiates the proxy module lazily on the first matched request — measured on Next 16.3.3: a freshly restarted `app` logs nothing at all until traffic arrives. An operator who restarts during a maintenance window and greps the log before re-admitting traffic gets an empty result and concludes the value was accepted.
+  **The request is not optional, and it must be `https://`.** These warnings are emitted once per process, and Next.js instantiates the proxy module lazily on the first request Next routes through its server pipeline — measured on Next 16.3.3: a freshly restarted `app` logs nothing at all until traffic arrives. An operator who restarts during a maintenance window and greps the log before re-admitting traffic gets an empty result and concludes the value was accepted.
 
-  > **Why not `http://`.** The `Caddyfile` has one site block and no `:80` block, so Caddy's automatic-HTTPS redirect vhost answers **every** plaintext request with a 308 at the edge — measured: `curl http://127.0.0.1:${HTTP_PORT}/`, and the same request carrying `Host: $SITE_ADDRESS`, both return 308 and **neither reaches `app`**. The proxy module never loads and the grep is then empty for exactly the wrong reason. Use the site's own hostname over HTTPS. `-k` is only needed while the certificate is Caddy's internal CA; drop it once a public certificate is issued. If DNS does not point here yet: `curl -sk --resolve "$SITE_ADDRESS:443:127.0.0.1" "https://$SITE_ADDRESS/"`.
+  > **Why not `http://`.** The `Caddyfile` has one site block and no `:80` block, so Caddy's automatic-HTTPS redirect vhost answers **every** plaintext request with a 308 at the edge — measured: `curl http://127.0.0.1:${HTTP_PORT}/`, and the same request carrying `Host: $SITE_ADDRESS`, both return 308 and **neither reaches `app`**. The proxy module never loads and the grep is then empty for exactly the wrong reason. Use the site's own hostname over HTTPS. **`SITE_ADDRESS` is not in your shell** unless you source `.env` first — Compose reads that file, your shell does not — and a bare `curl -s -o /dev/null "https://$SITE_ADDRESS/"` against an empty variable exits 3 in complete silence, leaving the grep below empty for a third wrong reason. Hence `set -a` and `-f`. `-k` is only needed while the certificate is Caddy's internal CA; drop it once a public certificate is issued. If DNS does not point here yet: `curl -sfk --resolve "$SITE_ADDRESS:443:127.0.0.1" "https://$SITE_ADDRESS/"`.
 
   `--since` guards the other end: container logs are capped (see "Log retention" below), so an old warning can be rotated away and also read as clean. A typo cannot disable rate limiting, but it can leave you thinking a change took effect when it did not.
 

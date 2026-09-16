@@ -86,11 +86,14 @@ const authMiddleware = NextAuth(authConfig).auth;
 // rebuild.
 //
 // "Module load" is NOT server boot. Next.js instantiates this module lazily, on
-// the first MATCHED request -- measured on Next 16.3.3: `next start` reaches
-// "Ready" with no [proxy] line in the log, and both warnings below appear only
-// after the first request, then never again for the life of the process. That
-// matters to anyone reading the log for them: a restart alone produces nothing
-// to find. DEPLOYMENT.md's tuning check sends a request first for this reason.
+// the first request it routes through its server pipeline -- measured on Next
+// 16.3.3: `next start` reaches "Ready" with no [proxy] line in the log, and the
+// warnings below appear only after the first request, then never again for the
+// life of the process. Note it is NOT "the first request the matcher below
+// selects": a GET /favicon.ico, explicitly excluded by that matcher, still
+// instantiates the module. Any request will do. What matters to anyone reading
+// the log for these warnings is that a restart ALONE produces nothing to find,
+// which is why DEPLOYMENT.md's checks send a request first.
 //
 // This is only *genuinely* runtime-read because of the runtime move. Proxy runs
 // on the Node.js runtime, and that is not configurable
@@ -143,20 +146,30 @@ function envInt(name: string, fallback: number): number {
   return parsed;
 }
 
-// AUTH_URL shape check, run once per process -- on the first matched request,
-// not at server boot (see the note on module load above).
+// AUTH_URL shape check, run once per process -- on the first request Next
+// routes, not at server boot (see the note on module load above).
 //
 // docker-compose.yml guards AUTH_URL with `${AUTH_URL:?}`, but Compose can only
-// check PRESENCE -- `http://psa.example.com` satisfies it. Auth.js then decides
-// the `__Secure-` cookie prefix from `url.protocol === "https:"` alone
-// (@auth/core init.js; see the COOKIE NAME note in src/lib/session.ts), so an
-// http:// value behind a TLS-terminating proxy silently issues a session cookie
-// with no Secure attribute and nothing anywhere reports it. This is the one
-// production misconfiguration in this file's blast radius that produces no
-// error at all, so say it loudly on stderr where `docker compose logs app`
-// shows it. Warn rather than throw: http:// is correct in local development,
-// and refusing to boot the whole app over a cookie attribute would be a worse
-// failure than the one being prevented.
+// check PRESENCE -- `http://psa.example.com` satisfies it.
+//
+// THE COOKIE IS NOT AT RISK. @auth/core reads
+// `config.useSecureCookies ?? url.protocol === "https:"` (init.js), and
+// src/auth.config.ts pins useSecureCookies under NODE_ENV=production, so the
+// URL's protocol is never consulted there and the cookie stays __Secure- and
+// Secure whatever AUTH_URL says. (An earlier version of this comment claimed
+// the opposite -- a silent non-Secure downgrade that "produces no error at
+// all" -- and survived for a cycle directly above the warning below that says
+// otherwise. Measured, both arms: https:// and http:// each give a 302 and the
+// same __Secure- cookie.)
+//
+// What IS at risk is everything Auth.js derives from AUTH_URL: its callback
+// and redirect URLs. And because the cookie no longer reflects the mistake,
+// nothing else in the deployment surfaces it -- this warning is the only
+// signal. Hence stderr, where `docker compose logs app` shows it.
+//
+// Warn rather than throw: http:// is correct in local development, and
+// refusing to boot the whole app over this would be a worse failure than the
+// one being prevented.
 function warnOnInsecureAuthUrl(): void {
   if (process.env.NODE_ENV !== "production") return;
   const raw = process.env.AUTH_URL;

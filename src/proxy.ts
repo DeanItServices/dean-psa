@@ -49,22 +49,26 @@ const authMiddleware = NextAuth(authConfig).auth;
 // stuffing / scripted abuse), not a correctness bug.
 //
 // Shared-IP caveat: an MSP office (or any NAT'd site) puts every technician
-// behind one public IP. Thresholds below are deliberately generous enough
+// behind one public IP. The default thresholds below (operator-tunable
+// since 08-02 -- see the env block) are deliberately generous enough
 // that normal multi-user office traffic -- several people loading pages,
 // polling, and occasionally logging back in around the same time -- won't
 // trip the limiter. This is why /api/auth/* (10 req/60s) is tighter than
 // general routes (60 req/60s) but still well above what one legitimate
 // login attempt (or a few concurrent ones from a shared office IP) needs.
 //
-// TRUST BOUNDARY -- see the full warning on getClientIp() below. Short
+// TRUST BOUNDARY -- see the full note on getClientIp() below. Short
 // version: this is IP-keyed via X-Forwarded-For/X-Real-IP, which are
-// client-settable headers. Without a reverse proxy in front of this app
-// that overwrites those headers with the real peer address, an
-// unauthenticated attacker can spoof a fresh IP on every request and
-// bypass this limiter entirely -- including the /api/auth/* brute-force
-// protection. This project's docker-compose.yml currently exposes `app`
-// directly with no such proxy, so treat this limiter as a no-op against a
-// deliberate attacker until one is added in front of it.
+// client-settable headers, so the limiter only means anything when
+// something in front of this app owns that header. Since Phase 8 something
+// does: `app` publishes no host ports, Caddy is the only ingress, and the
+// Caddyfile sets `header_up X-Forwarded-For {remote_host}`, which replaces
+// whatever arrived with Caddy's own observation of the peer. Before that,
+// docker-compose.yml published `app` on 3000 with no proxy in front of it
+// and this limiter was a no-op against anyone willing to forge a fresh IP
+// per request. Two conditions carry the guarantee and are both ways to
+// lose it: Caddy must stay the only route in, and the Docker daemon must
+// preserve source addresses (see getClientIp()).
 
 // OPERATOR-TUNABLE, READ FROM THE ENVIRONMENT AT PROCESS START.
 //
@@ -173,48 +177,91 @@ function cleanupStaleEntries(now: number) {
  * network, a cloud LB) sets to "client, proxy1, proxy2" -- the first entry
  * is the original client. `x-real-ip` is a common single-value fallback some
  * proxies set instead. If neither header is present (e.g. hitting the app
- * directly with no proxy in front, which can happen in local dev), fall back
- * to a fixed key so rate limiting degrades to "one shared bucket" rather
- * than silently turning off -- documented here rather than left implicit.
+ * directly with no proxy in front, which can happen in local dev), return
+ * null rather than a shared key; the call site skips rate limiting for that
+ * request, for the measured reason recorded there.
  *
- * !!! TRUST BOUNDARY WARNING -- READ BEFORE RELYING ON THIS FOR SECURITY !!!
+ * TRUST BOUNDARY -- WHAT IT WAS, WHAT CLOSED IT, AND WHAT STILL CARRIES IT
+ *
  * `x-forwarded-for` and `x-real-ip` are ordinary, client-settable HTTP
  * headers. Nothing in this file -- or anywhere else in this codebase --
- * verifies they were actually set by a trusted reverse proxy rather than by
- * the requester itself. This project's docker-compose.yml runs the `app`
- * service with port 3000 published directly to the host and has NO reverse
- * proxy in front of it. In that topology, any unauthenticated client can
- * send a different, forged `X-Forwarded-For` value on every single request
- * and this function will dutifully key the rate limiter on whatever the
- * attacker claims their IP is -- which completely defeats per-IP tracking,
- * INCLUDING the /api/auth/* brute-force protection above that this rate
- * limiter exists to provide.
+ * can verify they were set by a trusted reverse proxy rather than by the
+ * requester itself: once both arrive as the same header on the same socket,
+ * no request handler can tell them apart. That is true on the Node.js
+ * runtime this Proxy file runs on exactly as it was under the Edge
+ * middleware convention it replaced -- a header is a header. The
+ * distinction is only enforceable by something IN FRONT of this app that
+ * overwrites the header from the real peer address. It is an
+ * infrastructure property, and no change to this function can substitute
+ * for it.
  *
- * This is NOT fixed or mitigated anywhere in code, and cannot be from
- * inside this file: there is no way for an Edge middleware function to tell
- * "this header was set by my reverse proxy" apart from "this header was set
- * by the client" once both arrive as the same HTTP header on the same
- * socket. That distinction can only be enforced by something in front of
- * this app that strips/overwrites client-supplied X-Forwarded-For/
- * X-Real-IP and re-sets them from the real peer address (nginx, Caddy,
- * Traefik, a cloud load balancer, etc.).
+ * THE EXPOSURE, and why this block used to say the limiter was worthless:
+ * until Phase 8, docker-compose.yml published `app` on port 3000 directly
+ * to the host with NO reverse proxy in front of it. In that topology an
+ * unauthenticated client could send a different forged `X-Forwarded-For` on
+ * every single request, land in a fresh bucket each time, and bypass per-IP
+ * limiting entirely -- including the /api/auth/* and POST /login
+ * brute-force protection this limiter exists to provide. Against a
+ * deliberate attacker it was a no-op.
  *
- * Bottom line:
- *   - Deployed with a reverse proxy that overwrites these headers: this
- *     rate limiter is a meaningful brute-force deterrent, as designed.
- *   - Deployed as this repo's docker-compose.yml ships it today (app
- *     exposed directly, no proxy): getClientIp() returns an
- *     attacker-controlled value on every request. IP-based rate limiting
- *     (including /api/auth/*) provides NO protection against a direct,
- *     header-spoofing attacker in this configuration.
- *   - The one topology where the current docker-compose.yml setup is still
- *     fine as-is is a genuinely trusted, internal-only network where the
- *     client population has no incentive/ability to spoof headers (e.g. a
- *     private LAN with no exposure to the internet) -- not the general
- *     self-hosted-on-the-internet case this app otherwise targets.
- * Do not treat this comment as resolved by a future code change to this
- * function; the fix is infrastructure (add a reverse proxy that owns these
- * headers), not application code.
+ * WHAT CLOSED IT: Caddy now terminates TLS in front of the app. `app`
+ * publishes no host ports at all, so the only route in from the network is
+ * through Caddy, and the Caddyfile's reverse_proxy block carries
+ *
+ *     header_up X-Forwarded-For {remote_host}
+ *
+ * which REPLACES the header with Caddy's own observation of the peer
+ * address. Position 0 -- the entry `split(",")[0]` below reads -- is
+ * therefore never client-supplied, and the boundary is enforced by
+ * configuration this repository ships.
+ *
+ * That directive is load-bearing rather than belt-and-braces. Caddy's
+ * default, with no `trusted_proxies` covering the peer, is already to DROP
+ * an incoming X-Forwarded-For -- verified on caddy:alpine 2.11.4 by forging
+ * a chain through it. But the default is CONDITIONAL: add any
+ * `trusted_proxies` range that covers the peer (`trusted_proxies
+ * private_ranges` is the single most commonly pasted Caddy snippet) and
+ * Caddy forwards the incoming chain instead, so a forged
+ * `X-Forwarded-For: 1.2.3.4` arrives upstream as `1.2.3.4, <peer>` and
+ * position 0 is the attacker's value again (caddyserver/caddy#6783).
+ * `header_up` removes the condition, so the guarantee does not depend on
+ * the Caddy version behind a floating `:alpine` tag, nor on nobody ever
+ * adding that line. Also verified: with `trusted_proxies 0.0.0.0/0` AND
+ * `header_up` set, upstream still saw only the peer address.
+ *
+ * ONE SHARP EDGE, MEASURED: the Caddyfile overwrites X-Forwarded-For and
+ * ONLY X-Forwarded-For. A forged `X-Real-IP` passes straight through to
+ * this function (verified: forging both through the shipped config, the
+ * upstream saw `X-Forwarded-For: <peer>` but `X-Real-IP: 66.66.66.66`).
+ * That is harmless ONLY because the order below reads x-forwarded-for
+ * first and Caddy sets it on every proxied request, so the x-real-ip
+ * branch is unreachable in the shipped topology. Do not reorder these two
+ * checks, and do not "simplify" them into a first-non-empty-of-either
+ * lookup: either change hands the attacker the key again.
+ *
+ * THREE CONDITIONS CARRY THE CLAIM. Each is a way to lose it:
+ *
+ *   1. Caddy stays the only ingress. Re-publishing `app`'s 3000 to the
+ *      host, or reaching it from another container on the Compose network,
+ *      restores the original exposure verbatim for whoever can do it.
+ *   2. The `header_up` line stays in the Caddyfile.
+ *   3. The Docker daemon preserves source addresses. `{remote_host}` is
+ *      whichever peer Caddy accepted the connection from; with standard
+ *      iptables DNAT that is the real client. If the daemon routes
+ *      published ports through the userland `docker-proxy` instead, every
+ *      request appears to come from the bridge gateway and the entire
+ *      internet shares ONE bucket -- which does not merely weaken the
+ *      limiter, it turns it into a lockout affecting staff and attacker
+ *      alike. Worth checking after go-live: `docker compose logs caddy`
+ *      should show varied `remote_ip` values, not one repeated gateway
+ *      address.
+ *
+ * STILL TRUE, and closed by none of the above: `rateLimitStore` is a
+ * per-process, in-memory Map. It resets on container restart and is correct
+ * for exactly one Node.js process. This is a brute-force speed bump, not a
+ * distributed limiter and not a quota system -- a second `app` replica
+ * divides its effectiveness by the replica count, and the fix at that point
+ * is a shared store (e.g. Redis), not a bigger Map.
  */
 function getClientIp(request: NextRequest): string | null {
   const forwardedFor = request.headers.get("x-forwarded-for");
@@ -320,16 +367,18 @@ export default function proxy(request: NextRequest, event: NextFetchEvent) {
   // x-forwarded-for values all passed; requests sharing a source correctly
   // shared a bucket). The shared-key hazard is therefore latent, not live --
   // it depends on a deployment where nothing upstream supplies either header,
-  // which has NOT been observed here and is unverified for the Compose
-  // topology.
+  // which has NOT been observed here and is less likely still in the shipped
+  // Compose topology, where Caddy sets X-Forwarded-For on every proxied
+  // request.
   //
   // The branch stays because the failure mode it prevents is severe and the
   // cost is nil: counting an unidentifiable client cannot deter an attacker
-  // (who spoofs a fresh x-forwarded-for per request and lands in a fresh
-  // bucket anyway) while it could lock out everyone else. Skipping is the
-  // safer default until Phase 8's reverse proxy makes the header trustworthy
-  // -- the same infrastructure fix getClientIp()'s trust-boundary warning
-  // above has always named. Do not restore a shared fallback key.
+  // (who would spoof a fresh x-forwarded-for per request and land in a fresh
+  // bucket anyway) while it could lock out everyone else. Phase 8's reverse
+  // proxy has since landed and makes the header trustworthy in the shipped
+  // topology -- the infrastructure fix getClientIp()'s trust-boundary note
+  // above always named -- but this branch is what covers the request that
+  // arrives without one anyway. Do not restore a shared fallback key.
   if (ip === null) {
     return handleAfterRateLimit();
   }

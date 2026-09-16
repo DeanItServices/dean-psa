@@ -1,14 +1,14 @@
 # Project State
 
 ## Current Position
-- **Phase**: 8 of 9 (in progress -- waves 1-2 complete)
-- **Status**: Phase 8 waves 1-2 complete -- 08-01, 08-02, 08-03 all passed. Wave 3 (08-04) remains.
-- **Last Activity**: Phase 8 wave 2 execution (2026-09-16)
-- **Next Action**: Run `/legion:build` to execute wave 3: 08-04 trust boundary + runbook
+- **Phase**: 8 of 9 (executed, pending review)
+- **Status**: Phase 8 complete -- all 4 plans executed successfully across 3 waves
+- **Last Activity**: Phase 8 execution complete (2026-09-16)
+- **Next Action**: Run `/legion:review` to verify Phase 8: Deployment Hardening
 
 ## Progress
 ```
-[##################..] 91% — 42/46 plans complete
+[##################..] 93% — 43/46 plans complete
 ```
 
 ## GitHub
@@ -20,6 +20,11 @@
 - Phase 8 issue: https://github.com/DeanItServices/dean-psa/issues/22
 
 ## Recent Decisions
+- **Phase 8 execution complete (2026-09-16)**: all 4 plans passed across 3 waves. 08-01 and 08-02 Complete, 08-03 Complete with Warnings (one stale plan assertion, since corrected), 08-04 Complete. Every plan's claims were re-verified independently by the coordinator rather than accepted from the agent reports.
+- **NEW SECURITY FINDING, not exploitable but carried forward**: the shipped `Caddyfile` sets `header_up` for `X-Forwarded-For` ONLY. A forged `X-Real-IP` reaches the app unmodified -- reproduced live (`XFF=[172.18.0.1] XRI=[66.66.66.66]`). It is unreachable today because `getClientIp()` reads `x-forwarded-for` first and Caddy always sets it, so the `x-real-ip` branch never runs in the shipped topology. But the boundary now partly rests on the ORDER of two checks in application code rather than on the proxy config alone. Clean fix is one more line in `Caddyfile`: `header_up X-Real-IP {remote_host}`. Unowned -- 08-03 owned that file and is closed.
+- **`caddy validate` advises deleting the load-bearing directive** (`Unnecessary header_up X-Forwarded-For`). The lint heuristic assumes Caddy's default is unconditional; it is not. Countered in DEPLOYMENT.md, but the Caddyfile's own comment does not name the warning.
+- **The cookie-name check was never executed.** DEPLOYMENT.md prescribes observing `__Secure-authjs.session-token` after first login as the test that `AUTH_URL` is genuinely https. No built image, no public DNS and no issuable certificate here, so nobody has yet seen it pass. This is Phase 8's largest remaining unverified assertion.
+- **P8-5's wording was imprecise and the code comment deliberately does not repeat it.** Caddy does not "overwrite X-Forwarded-For" by default -- it DROPS an incoming one, conditionally on no `trusted_proxies` range covering the peer. The guarantee is attributed to the shipped `header_up` directive, which removes the condition.
 - **Phase 8 wave 2 executed (2026-09-16)**: 08-02 and 08-03 both passed, run sequentially with a commit between so each plan's `git status --porcelain` scope check saw a clean tree.
 - **CORRECTION to a plan-critique claim.** The critique asserted Caddy's `reverse_proxy` APPENDS to `X-Forwarded-For`. Live testing against caddy:alpine v2.11.4 shows the default DROPS a client-supplied header -- Caddy documents it ignores these values "to prevent spoofing". But the default is CONDITIONAL: with any `trusted_proxies` range covering the peer, Caddy forwards the whole incoming chain and the forged value lands FIRST, exactly where `getClientIp()` reads (`split(",")[0]`). Verified all three configs. `header_up X-Forwarded-For {remote_host}` shipped, which removes the condition -- genuine defense-in-depth given `trusted_proxies private_ranges` is the commonly pasted snippet and `caddy:alpine` is a floating tag.
 - **Rate-limit env plumbing uses compose LIST form, not mapping.** Proven live: the mapping form injects an empty string when the host var is unset, and empty is a rejected value in 08-02's `envInt`, so every default deployment would log three warnings at every start. List form omits the key entirely.

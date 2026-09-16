@@ -56,6 +56,31 @@ Docker-in-Docker:
 
 If it fails, read `/tmp/dockerd.log` — that is where the daemon's output goes.
 
+### Restarting after the daemon has died
+
+A daemon that was killed rather than shut down leaves a **stale pidfile**, and the next
+start refuses:
+
+```
+failed to start daemon, ensure docker is not running or delete /var/run/docker.pid:
+process with PID 399 is still running
+```
+
+The named PID is usually gone — confirm before deleting anything:
+
+```bash
+ps -o pid,cmd -p "$(cat /var/run/docker.pid)"   # empty output = stale
+```
+
+If it is stale, clear both the pidfile and the orphaned socket, then start as above:
+
+```bash
+rm -f /var/run/docker.pid /var/run/docker.sock
+nohup dockerd > /tmp/dockerd.log 2>&1 &
+```
+
+Pulled images live on disk and **survive** the restart; only the daemon process is lost.
+
 ### Verify it actually works
 
 A running daemon is not the same as a *useful* one. Walk up the ladder, because each
@@ -70,6 +95,9 @@ docker pull alpine:3.20
 
 # 3. Containers actually execute
 docker run --rm alpine:3.20 sh -c 'echo ok'
+
+# 3b. NOTE: `docker compose config` is client-side only and exits 0 even with no
+#     daemon running. It is not a daemon health check — do not use it as one.
 
 # 4. The check this project's Phase 8 plans need.
 #    Use a throwaway env: the compose file uses `${VAR:?...}` guards, so a bare

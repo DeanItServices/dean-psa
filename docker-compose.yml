@@ -1,20 +1,54 @@
 services:
+  caddy:
+    image: caddy:alpine
+    ports:
+      # Overridable so a second stack can run side by side, the same reason
+      # DB_PORT exists. HTTP-01 issuance requires the PUBLIC :80 to reach this
+      # container, so HTTP_PORT stays 80 on the deployment that serves traffic.
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?SITE_ADDRESS is required - the public hostname Caddy serves, e.g. psa.example.com}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and the ACME account key. Losing /data forces re-issuance
+      # and can hit Let's Encrypt rate limits.
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
   app:
     build: .
-    ports:
-      - "3000:3000"
+    # No ports: the app is reachable only on the internal Compose network, at
+    # app:3000, which is where caddy proxies. Publishing 3000 again would let a
+    # client bypass Caddy and forge X-Forwarded-For directly.
+    #
+    # List form, not mapping form: a bare key is OMITTED from the container when
+    # the variable is unset, whereas `KEY: ${KEY}` injects an empty string --
+    # and envInt() in src/proxy.ts rejects empty, so every default deployment
+    # would log warnings at start. Compose resolves bare keys from .env.
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/msp_psa?schema=public
-      AUTH_SECRET: ${AUTH_SECRET}
-      AUTH_URL: ${AUTH_URL:-http://localhost:3000}
-      AUTH_TRUST_HOST: ${AUTH_TRUST_HOST:-true}
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required - see .env.example}@db:5432/msp_psa?schema=public
+      - AUTH_SECRET=${AUTH_SECRET}
+      # No :- default. An unset AUTH_URL behind TLS silently yields a non-Secure
+      # session cookie: Auth.js picks the __Secure- prefix from url.protocol
+      # alone (src/lib/session.ts), with no error to notice.
+      - AUTH_URL=${AUTH_URL:?AUTH_URL is required and must be the public https URL, e.g. https://psa.example.com}
+      - AUTH_TRUST_HOST=${AUTH_TRUST_HOST:-true}
+      # Optional rate-limit overrides read by src/proxy.ts at process start.
+      # Compose's .env interpolates this file only and never reaches a
+      # container, so these must be enumerated here or the reads are always
+      # undefined and the limiter silently stays at its defaults.
+      - RATE_LIMIT_WINDOW_MS
+      - RATE_LIMIT_GENERAL
+      - RATE_LIMIT_AUTH
     depends_on:
       - db
   email-poller:
     build: .
     command: ["npm", "run", "email-poller"]
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/msp_psa?schema=public
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required - see .env.example}@db:5432/msp_psa?schema=public
       AZURE_TENANT_ID: ${AZURE_TENANT_ID}
       AZURE_CLIENT_ID: ${AZURE_CLIENT_ID}
       AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET}
@@ -25,11 +59,19 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      # No :- default: an unset variable must fail the stack, not start Postgres
+      # with a guessable or empty password. Note this applies at initdb ONLY --
+      # an existing pgdata volume keeps its old password until ALTER USER.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required - see .env.example}
       POSTGRES_DB: msp_psa
     ports:
-      - "${DB_PORT:-5432}:5432"
+      # Loopback-scoped: Postgres is reachable from this host (migrations, seed,
+      # bootstrap:admin and the E2E suite all run host-side) but from nowhere
+      # else on the network.
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
 volumes:
   pgdata:
+  caddy_data:
+  caddy_config:

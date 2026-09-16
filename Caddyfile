@@ -1,0 +1,42 @@
+# Caddy terminates TLS in front of the app container.
+#
+# The site address comes from SITE_ADDRESS in .env (e.g. psa.example.com), so no
+# MSP-specific hostname is committed to this repository. Caddy obtains and renews
+# the certificate AUTOMATICALLY via the ACME HTTP-01 challenge on the first
+# request for that hostname, which means two things must hold on the host:
+#
+#   1. Public DNS for SITE_ADDRESS resolves to this host, and
+#   2. inbound TCP :80 is reachable from the public internet -- HTTP-01 is
+#      answered on port 80. Blocking :80 does not "force HTTPS", it prevents
+#      issuance entirely and the site then serves no TLS at all.
+#
+# Caddy redirects http:// to https:// by itself once a certificate exists.
+# Issued certificates and the ACME account key live in the caddy_data volume
+# (docker-compose.yml); losing that volume forces re-issuance and can hit
+# Let's Encrypt rate limits, so do not prune it casually.
+
+{$SITE_ADDRESS} {
+	reverse_proxy app:3000 {
+		# TRUST BOUNDARY -- load-bearing, do not delete.
+		#
+		# getClientIp() in src/proxy.ts reads the FIRST comma-separated entry of
+		# X-Forwarded-For and rate-limits per that value, so whatever sits in
+		# position 0 is what the brute-force limiter buckets on.
+		#
+		# Caddy's default (no trusted_proxies covering the peer) is to DROP a
+		# client-supplied X-Forwarded-For and send only the address it accepted
+		# the connection from -- verified on caddy:alpine 2.11.4. But that
+		# default is conditional: as soon as any trusted_proxies range covers the
+		# peer (e.g. the commonly pasted `trusted_proxies private_ranges`), Caddy
+		# APPENDS instead, and a forged `X-Forwarded-For: 1.2.3.4` arrives
+		# upstream as `1.2.3.4, <peer>` -- attacker-controlled value first,
+		# exactly where the limiter looks (caddyserver/caddy#6783).
+		#
+		# This directive removes the condition: header_up replaces the header
+		# outright with Caddy's own observation of the peer, so position 0 is
+		# never client-supplied regardless of Caddy version or any future
+		# trusted_proxies setting. Verified: with `trusted_proxies 0.0.0.0/0`
+		# and this line present, upstream still sees only the peer address.
+		header_up X-Forwarded-For {remote_host}
+	}
+}

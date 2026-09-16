@@ -1,14 +1,14 @@
 # Project State
 
 ## Current Position
-- **Phase**: 8 of 9 (in progress -- wave 1 of 3 complete)
-- **Status**: Phase 8 wave 1 complete -- 08-01 passed. Waves 2-3 not started: they need a Docker daemon, which this environment does not have.
-- **Last Activity**: Phase 8 wave 1 execution (2026-09-15)
-- **Next Action**: Run `/legion:build` from an environment with Docker to execute waves 2-3 (08-02, 08-03, 08-04)
+- **Phase**: 8 of 9 (in progress -- waves 1-2 complete)
+- **Status**: Phase 8 waves 1-2 complete -- 08-01, 08-02, 08-03 all passed. Wave 3 (08-04) remains.
+- **Last Activity**: Phase 8 wave 2 execution (2026-09-16)
+- **Next Action**: Run `/legion:build` to execute wave 3: 08-04 trust boundary + runbook
 
 ## Progress
 ```
-[#################...] 86% — 40/46 plans complete
+[##################..] 91% — 42/46 plans complete
 ```
 
 ## GitHub
@@ -20,6 +20,12 @@
 - Phase 8 issue: https://github.com/DeanItServices/dean-psa/issues/22
 
 ## Recent Decisions
+- **Phase 8 wave 2 executed (2026-09-16)**: 08-02 and 08-03 both passed, run sequentially with a commit between so each plan's `git status --porcelain` scope check saw a clean tree.
+- **CORRECTION to a plan-critique claim.** The critique asserted Caddy's `reverse_proxy` APPENDS to `X-Forwarded-For`. Live testing against caddy:alpine v2.11.4 shows the default DROPS a client-supplied header -- Caddy documents it ignores these values "to prevent spoofing". But the default is CONDITIONAL: with any `trusted_proxies` range covering the peer, Caddy forwards the whole incoming chain and the forged value lands FIRST, exactly where `getClientIp()` reads (`split(",")[0]`). Verified all three configs. `header_up X-Forwarded-For {remote_host}` shipped, which removes the condition -- genuine defense-in-depth given `trusted_proxies private_ranges` is the commonly pasted snippet and `caddy:alpine` is a floating tag.
+- **Rate-limit env plumbing uses compose LIST form, not mapping.** Proven live: the mapping form injects an empty string when the host var is unset, and empty is a rejected value in 08-02's `envInt`, so every default deployment would log three warnings at every start. List form omits the key entirely.
+- **NEW hazard for 08-04**: `prisma7.config.ts` loads env via plain dotenv 17.4.2, which does NOT expand `${...}`. An operator copying `.env.example` and running `npm run db:migrate:deploy` without sourcing `.env` first hands Prisma a literal placeholder. `set -a; . ./.env; set +a` fixes it and DEPLOYMENT.md currently mentions that only under `bootstrap:admin`.
+- **Docker source-IP caveat**: published ports routed through the userland docker-proxy make every request appear to come from the bridge gateway, which would key the whole internet into one rate-limit bucket. Observed directly during XFF testing (upstream saw 172.18.0.1). iptables DNAT preserves the real client IP. Runbook item for 08-04.
+- **Stale plan assertion corrected**: 08-03's `<verification>` block asserted `'ports' not in s['db']`, which the approved loopback deviation supersedes. The executor correctly refused to satisfy it by deleting the loopback binding; the line is now fixed in the plan file.
 - **Phase 8 wave 1 executed (2026-09-15)**: 08-01 proxy migration Complete. `src/middleware.ts` -> `src/proxy.ts`, export renamed, `tsc --noEmit` and `lint` both 0. The code-only diff against HEAD is exactly two hunks (the export name, and `NextMiddleware` -> `NextProxy`) -- independently re-verified by the coordinator, not taken from the agent's report. The codemod preserved all ~180 lines of load-bearing commentary, so nothing needed restoring.
 - **The claim the phase ordering rests on is now verified against this install**, not just the exploration doc: `proxy.md:255` confirms Proxy is Node-runtime and not configurable, and `version-16.md:616` confirms Edge is not supported in proxy. So migrate-before-env-read was the right ordering.
 - **`authAsMiddleware` cast kept, and re-derived rather than copied.** next-auth 5.0.0-beta.32 types `auth` as five call signatures, only one of which takes two arguments -- the Pages Router pair. The runtime shape Next uses is unrepresented, orthogonal to Edge vs Node. Confirmed empirically: deleting the cast yields TS2345. Retargeted `NextMiddleware` -> `NextProxy` (an identical alias carrying a deprecation notice on the old name).

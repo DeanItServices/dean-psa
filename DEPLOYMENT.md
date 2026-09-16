@@ -6,6 +6,26 @@ Every command below matches a real script in `package.json`, a real Docker Compo
 
 ---
 
+## Contents
+
+**Installing, in order**
+1. [Prerequisites](#prerequisites)
+2. [First-time setup](#first-time-setup) — filling in `.env`
+3. [Build and start](#build-and-start)
+4. [Database migration](#database-migration)
+5. [Creating the first admin account and onboarding the team](#creating-the-first-admin-account-and-onboarding-the-team)
+6. [First-run verification](#first-run-verification)
+
+**Day-2 operations** — you will not need these on day one, and you will need them in a hurry later
+- [Upgrades: order matters — apply the migration *before* the app restarts](#upgrades-order-matters--apply-the-migration-before-the-app-restarts)
+- [Rotating the database password](#rotating-the-database-password)
+- [Rotating `AUTH_SECRET`](#rotating-auth_secret)
+- [Stopping, restarting and backing up](#stopping-restarting-and-backing-up) — including [Backup](#backup) and restore
+- [Operational notes](#operational-notes) — rate-limit tuning, log retention, known gaps
+
+**Development only** — not part of a production deployment
+- [Running E2E verification](#running-e2e-verification)
+
 ## Prerequisites
 
 - **Docker** and **Docker Compose** (the `docker compose` plugin, v2 syntax — not the legacy standalone `docker-compose` binary) installed on the target host.
@@ -56,7 +76,7 @@ Three consequences worth stating explicitly:
 
 **Rate limiting — what it does and does not give you.** `src/proxy.ts` applies an in-memory, IP-keyed fixed-window rate limiter: by default 60 requests/60s per IP for general routes, and a tighter 10 requests/60s per IP for the credential-check surface (`/api/auth/*` and `POST /login`).
 
-- **It now keys on a trustworthy value.** `X-Forwarded-For` and `X-Real-IP` are ordinary client-settable headers, so before Phase 8 — with `app` published directly and nothing in front of it — a client could send a fresh forged IP on every request and bypass the limiter entirely, brute-force protection included. The `Caddyfile` closes that: `header_up X-Forwarded-For {remote_host}` and `header_up X-Real-IP {remote_host}` replace **both** headers `getClientIp()` reads with Caddy's own observation of the peer address. It also strips the two remaining address-bearing headers a client can set (`header_up -Forwarded`, `header_up -X-Forwarded-Port`) — nothing reads those today, so that part is pre-emptive rather than a live fix. That holds unconditionally, not just under Caddy's default behaviour — see the trust-boundary comment on `getClientIp()` in `src/proxy.ts` for the full reasoning and the two remaining ways to lose it (re-publishing `app`'s port, and a Docker daemon that does not preserve source addresses).
+- **It now keys on a trustworthy value.** `X-Forwarded-For` and `X-Real-IP` are ordinary client-settable headers, so before Phase 8 — with `app` published directly and nothing in front of it — a client could send a fresh forged IP on every request and bypass the limiter entirely, brute-force protection included. The `Caddyfile` closes that: `header_up X-Forwarded-For {remote_host}` and `header_up X-Real-IP {remote_host}` replace **both** headers `getClientIp()` reads with Caddy's own observation of the peer address. It also strips the two remaining address-bearing headers a client can set (`header_up -Forwarded`, `header_up -X-Forwarded-Port`) — nothing reads those today, so that part is pre-emptive rather than a live fix. That holds unconditionally, not just under Caddy's default behaviour. **Four** conditions carry it, and each is a way to lose it; they are enumerated once, on `getClientIp()` in `src/proxy.ts`, and deliberately not re-listed here. Read that list before changing anything in front of this app. (An earlier revision of this bullet gave a short two-item version of it and silently dropped the `header_up` line — the one condition `caddy validate` actively invites you to delete. That is why the list lives in one place.)
 
   Covering `X-Real-IP` too is not redundant. `getClientIp()` reads `X-Forwarded-For` first and only falls back to `X-Real-IP`, and Caddy always sets the former — so a forged `X-Real-IP` was never reachable. But that made the guarantee depend on the *order of two statements inside application code*, where a future refactor can quietly invert it. Verified before the fix: upstream saw `XFF=[<peer>] XRI=[66.66.66.66]`. Verified after: `XFF=[<peer>] XRI=[<peer>] FWD=[] XFP=[]`.
 - **Do not delete the `header_up` line on Caddy's advice.** `caddy validate` emits `Unnecessary header_up X-Forwarded-For: the reverse proxy's default behavior is to pass headers to the upstream` — a lint heuristic that is wrong here. **This warning is expected on every run and is also called out in the `Caddyfile` itself**, right above the line, since that is where someone acting on the advice is actually looking. Verified live on `caddy:alpine` v2.11.4 by forging `X-Forwarded-For: 66.66.66.66, 7.7.7.7` through three configurations: bare `reverse_proxy` dropped it (upstream saw the peer), `reverse_proxy` plus `trusted_proxies 0.0.0.0/0` forwarded it **attacker-value-first** (`66.66.66.66, 7.7.7.7, <peer>`), and the shipped `Caddyfile` dropped it in both cases. The directive is what makes the guarantee independent of `trusted_proxies` and of whichever Caddy version the floating `:alpine` tag resolves to.
@@ -119,12 +139,20 @@ Three consequences worth stating explicitly:
    - `HTTP_PORT` / `HTTPS_PORT` — optional, defaulting to `80`/`443`. Only change them to run a second stack side by side on the same host. A stack on non-standard ports cannot answer either ACME challenge (HTTP-01 needs the real public :80, TLS-ALPN-01 the real public :443) and so cannot obtain a publicly-trusted certificate. Its `http://` → `https://` redirect is also wrong: Caddy builds the redirect target from the site address with the implied `:443`, so on an `HTTPS_PORT=8443` stack the redirect points at `https://host/` and lands nowhere. Reach a side-by-side stack over `https://host:8443` directly.
 
    **Auth**
-   - `AUTH_SECRET` — generate with `npx auth secret` or `openssl rand -base64 32`. Required; compose refuses to start without it. Optionally `AUTH_SECRET_1`, `AUTH_SECRET_2` and `AUTH_SECRET_3` hold *retired* secrets during a rotation: `AUTH_SECRET` signs new sessions, the numbered slots are decode-only, so sessions minted under the old value keep working until you drop the slot. To rotate, move the current value into `AUTH_SECRET_1`, put the new one in `AUTH_SECRET`, restart `app`, and drop the slot once every session older than the 8-hour max age has expired. Leave them unset unless you are mid-rotation. (This works only because `src/auth.config.ts` sets Auth.js's `secret` explicitly — Auth.js does not read these slots by itself in a next-auth app, and its own ordering would treat the highest-numbered slot as the signing secret. See `src/lib/auth-secrets.ts`.)
+   - `AUTH_SECRET` — generate with `npx auth secret` (or `openssl rand -hex 32`, matching `.env.example`). Required; compose refuses to start without it. Optionally `AUTH_SECRET_1`, `AUTH_SECRET_2` and `AUTH_SECRET_3` hold *retired* secrets during a rotation: `AUTH_SECRET` signs new sessions, the numbered slots are decode-only, so sessions minted under the old value keep working until you drop the slot. To rotate, move the current value into `AUTH_SECRET_1`, put the new one in `AUTH_SECRET`, run **`docker compose up -d app`**, and drop the slot once every session older than the 8-hour max age has expired. **Not `docker compose restart app`** — see "Rotating `AUTH_SECRET`" under Operational notes, which is the procedure to follow. Leave them unset unless you are mid-rotation. (This works only because `src/auth.config.ts` sets Auth.js's `secret` explicitly — Auth.js does not read these slots by itself in a next-auth app, and its own ordering would treat the highest-numbered slot as the signing secret. See `src/lib/auth-secrets.ts`.)
    - `AUTH_URL` — **required, no default, and shipped blank.** The public `https://` URL this deployment is reachable at, matching `SITE_ADDRESS` (e.g. `https://psa.yourmsp.com`), with no trailing slash. Compose fails fast if it is unset. It must be `https://`: Auth.js decides whether to use the `__Secure-` cookie prefix from this URL's protocol alone, and that protocol beats the `X-Forwarded-Proto` header Caddy sets, so an `http://` value behind TLS is not rescued by the proxy. This deployment no longer leaves that to chance — see "the cookie downgrade itself is no longer left to the guard" below — but `AUTH_URL` should still be correct, because it is also the URL Auth.js builds its own callbacks from.
 
-     **Two things the `${AUTH_URL:?}` guard does not do for you.** It checks *presence*, not shape — `http://...`, a wrong hostname, or a trailing slash all pass the compose guard. And it only helps if the value is actually absent, which is why `.env.example` ships this blank alongside `POSTGRES_PASSWORD`, `SITE_ADDRESS` and `AUTH_SECRET`: an example value left in place by an operator who skimmed the file would satisfy the guard and start the stack on somebody else's hostname. Verify the result rather than the input — see the cookie-name check under "Creating the first admin account".
+     **Two things the `${AUTH_URL:?}` guard does not do for you.** It checks *presence*, not shape — `http://...`, a wrong hostname, or a trailing slash all pass the compose guard. And it only helps if the value is actually absent, which is why `.env.example` ships this blank alongside `POSTGRES_PASSWORD`, `SITE_ADDRESS` and `AUTH_SECRET`: an example value left in place by an operator who skimmed the file would satisfy the guard and start the stack on somebody else's hostname. Nothing downstream will catch a wrong *hostname* at all — check the value you typed.
 
-     **The cookie downgrade itself is no longer left to the guard.** `src/auth.config.ts` pins `useSecureCookies: true` whenever `NODE_ENV=production`, which the shipped image sets, so the `__Secure-` prefix and the `Secure` attribute hold in production regardless of what `AUTH_URL`'s scheme says. The failure mode for a mistyped `http://` is now a login that does not complete — the browser will not return a Secure cookie over plaintext — rather than a session cookie that silently travels in the clear. If logins fail right after go-live, read `docker compose logs app --since 5m | grep '\[proxy\]'`: a `[proxy] AUTH_URL uses http://` line is the explanation. Fail closed, with the reason in the log.
+     **The cookie downgrade itself is no longer left to the guard.** `src/auth.config.ts` pins `useSecureCookies: true` whenever `NODE_ENV=production`, which the shipped image sets, so the `__Secure-` prefix and the `Secure` attribute hold in production **regardless of what `AUTH_URL`'s scheme says**. The cookie cannot be downgraded by a typo any more.
+
+     **Which also means a wrong `AUTH_URL` is now invisible in the cookie.** Measured, production build, identical in both arms: with `AUTH_URL=https://…` and with `AUTH_URL=http://…`, sign-in returns 302 and sets `__Secure-authjs.session-token` with the `Secure` attribute. Login does *not* fail, and the cookie name does *not* change. The **only** thing in this deployment that detects a non-`https` `AUTH_URL` is the startup warning:
+
+     ```bash
+     docker compose logs app --since 5m | grep '\[proxy\]'
+     ```
+
+     Look for `[proxy] AUTH_URL uses http://`. Read "Rate-limit threshold tuning" under Operational notes first for why that grep needs an HTTPS request made against the site before it can find anything. `AUTH_URL` still has to be right — Auth.js builds its callback and redirect URLs from it — but it is no longer what protects the cookie.
    - `AUTH_TRUST_HOST` — leave `true` unless you have a specific reason to change it; required for Auth.js to trust the host header behind a reverse proxy, which this deployment now always has.
 
    **Rate limiting** — all optional; leave unset to keep the defaults:
@@ -193,7 +221,7 @@ docker compose --profile email up -d
 
 > **Use the flag on every command that should include the poller.** Set `COMPOSE_PROFILES=email` in your shell (or in `.env`) if you would rather not repeat it. If you filled in the Azure block and the poller is simply not there, a missing flag is the reason.
 >
-> Compose's behaviour is not uniform across subcommands, and the difference matters most at shutdown. Measured on the Compose in use here (v2 plugin line, `docker compose version` reports v5.1.1), running each command **without** `--profile email` against a project whose poller was already started with it:
+> Compose's behaviour is not uniform across subcommands, and the difference matters most at shutdown. Measured on the Compose in use here (`docker compose version` reports **v5.1.1**; yours may differ, which is what the second caveat below is about), running each command **without** `--profile email` against a project whose poller was already started with it:
 >
 > | Command | Poller included? |
 > |---|---|
@@ -205,9 +233,9 @@ docker compose --profile email up -d
 > | `stop` | **no** — ⚠ the poller keeps running |
 > | `down` | **no** — ⚠ the poller keeps running; the network removal fails with `Resource is still in use`, **and the command still exits 0** |
 >
-> The two marked ⚠ are the ones that bite: **`docker compose stop` and `docker compose down` do not stop the poller** unless you pass the flag, so a shutdown you believe is complete leaves a container holding live Azure credentials and a live database connection. Always shut down with `docker compose --profile email down` (or with `COMPOSE_PROFILES=email` exported) on a deployment that runs the poller, and check `docker ps` afterwards — the exit status will not tell you, since the failed `down` returns 0. (`COMPOSE_PROFILES=email` in `.env` does work and is the durable fix; `COMPOSE_PROJECT_NAME` is not a substitute.)
+> The two marked ⚠ are the ones that bite: **`docker compose stop` and `docker compose down` do not stop the poller** unless you pass the flag, so a shutdown you believe is complete leaves a container holding live Azure credentials and a live database connection. Always shut down with `docker compose --profile email down` (or with `COMPOSE_PROFILES=email` exported) on a deployment that runs the poller, and check `docker ps` afterwards — the exit status will not tell you, since the failed `down` returns 0. Setting `COMPOSE_PROFILES=email` in `.env` is the durable fix.
 >
-> **Two caveats on the table.** First, it is invocation-dependent: passing an explicit **`-p <project>` flag** flips the `stop`/`down`/`restart` rows, and those commands then **do** include the profiled service. It is the flag itself, not the project name: passing `-p` with the same name the directory already derives still flips them. `COMPOSE_PROJECT_NAME` in your environment or `.env` does **not** — measured, it behaves like the no-flag column and leaves the poller running. Most commands in this document use the implicit, directory-derived name, which is what the table measures; the backup-verification step under "Backups" is the one place that deliberately passes `-p`.
+> **Two caveats on the table.** First, it is invocation-dependent: passing an explicit **`-p <project>` flag** flips the `stop`/`down`/`restart` rows, and those commands then **do** include the profiled service. It is the flag itself, not the project name: passing `-p` with the same name the directory already derives still flips them. `COMPOSE_PROJECT_NAME` in your environment or `.env` does **not** — measured, it behaves like the no-flag column and leaves the poller running. Most commands in this document use the implicit, directory-derived name, which is what the table measures; the backup-verification step under "Backup" is the one place that deliberately passes `-p`.
 >
 > Second, it is a single measurement on one Compose build, not a promise about yours. Treat the table as the evidence for the advice, not as a prediction: **always pass `--profile email` (or export `COMPOSE_PROFILES=email`), and always confirm with `docker ps` afterwards.** That instruction is correct whichever way your Compose version behaves.
 
@@ -237,7 +265,7 @@ No `restart:` policy is set on any service in `docker-compose.yml`, so a contain
 
 ## Database migration
 
-`npm run db:migrate:deploy` and `npm run test:e2e` (below) run on the **host**, not inside a container — Node.js must be installed on the host (matching the version pinned in `Dockerfile`, currently `node:20.20`), and the project's dependencies must be installed there once:
+`npm run db:migrate:deploy` and `npm run test:e2e` (below) run on the **host**, not inside a container — Node.js must be installed on the host (any version meeting the Prerequisites above — it does **not** have to match the `node:20.20` pinned in `Dockerfile`, which governs only the image), and the project's dependencies must be installed there once:
 
 ```bash
 npm install
@@ -275,7 +303,7 @@ The index name printed back means the constraint is in place. **Empty output mea
 
 > **Do not substitute `\di+ TimeEntry_one_active_timer_per_user` here.** psql down-cases an unquoted `\d` pattern, so it searches for `timeentry_...` and never matches this mixed-case identifier: it prints `Did not find any relation named "TimeEntry_one_active_timer_per_user".` and exits 0 **whether the index exists or not** — verified against a live Postgres 16 with the index present and then dropped, byte-identical output both times. A check that cannot produce its own "good" state is worse than no check: it reads as a broken deployment forever. `\di+ "TimeEntry_one_active_timer_per_user"` (inner quotes) does work, but the `pg_indexes` query above is preferred because it is scriptable.
 
-> **Warning — on an upgrade, this must complete before the `app` container restarts.** Application code that runs ahead of its schema does not fail partially here: `authorize()` selects every column, an absent column raises Prisma **P2022** on every request, and the login form reports "Invalid email or password" to everyone including every admin. See "Order matters: apply the migration *before* the app restarts" in the next section for the full explanation and the safe upgrade order.
+> **Warning — on an upgrade, this must complete before the `app` container restarts.** Application code that runs ahead of its schema does not fail partially here: `authorize()` selects every column, an absent column raises Prisma **P2022** on every request, and the login form reports "Invalid email or password" to everyone including every admin. See "Upgrades: order matters" — the next section — for the full explanation and the safe upgrade order.
 
 Run this command **from the host**, not inside a container, with `DATABASE_URL` exported into your shell and pointing at the published `db` port (i.e. matching `.env`'s `DATABASE_URL`/`DB_PORT`). Run it once after `docker compose up -d`, and again after pulling any future update that adds new migrations.
 
@@ -292,6 +320,18 @@ This works because the `db` service publishes `127.0.0.1:${DB_PORT:-5432}:5432` 
 > If this returns any rows, the migration will fail until those duplicates are resolved — that's a data decision for the operator/admin (which row is authoritative), not something to fix blindly in code.
 
 ---
+
+## Upgrades: order matters — apply the migration *before* the app restarts
+
+**Run `npm run db:migrate:deploy` (see "Database migration" above) and confirm it succeeded before starting or restarting the `app` and `email-poller` containers on any upgrade that includes new columns.** This is not a preference — with application code running ahead of its schema, this app does not degrade partially, it fails completely and misleadingly:
+
+- `authorize()` (`src/auth.ts`) looks the user up with `findUnique` and **no `select` clause**, so Prisma asks Postgres for every column the current schema defines.
+- If a column the code knows about does not yet exist in the database, Prisma raises **P2022** (`The column ... does not exist in the current database`) on that query — and therefore on *every* login attempt and every authenticated page load.
+- `loginAction` translates any failure from `authorize()` into the same anti-enumeration message the wrong password produces: **"Invalid email or password"**. Every user sees it. **Including every admin.** There is no in-app escape hatch, no error detail, and nothing in the UI that says "run a migration": recovering requires shell access to the host and `docker compose logs app` (or `psql`) to see the real P2022 underneath.
+
+So the safe upgrade order on an existing deployment is: pull → `npm install && npx prisma generate` → **`npm run db:migrate:deploy`** → `docker compose build` → `docker compose up -d`. On a brand-new deployment, `docker compose up -d` before the migration is harmless *provided nobody tries to log in* until `db:migrate:deploy` has run.
+
+`scripts/create-admin.ts` (below) detects P2022 itself and prints this same guidance rather than a raw Prisma stack trace, so if you bootstrap the admin before restarting anything, the script tells you the migration is missing.
 
 ## Rotating the database password
 
@@ -340,37 +380,26 @@ The alternative — deleting the `pgdata` volume so initdb runs again with the n
 
 ## Creating the first admin account and onboarding the team
 
-> ### TLS precondition — satisfied as of Phase 8
+> ### Before you onboard anyone: two checks
 >
-> Earlier revisions of this document told operators **not** to create accounts for the team, and the reason is worth keeping visible rather than deleting: `docker-compose.yml` used to publish the app directly (`"3000:3000"`) with no reverse proxy in front of it, so every byte crossed the network as plaintext HTTP — the admin password typed at the login form, every temporary password an admin read off `/admin/users` and handed to a technician, and every session cookie authenticating all subsequent requests. Anything with visibility of that path — another host on the office LAN, a span port, a compromised access point — could read a session cookie and replay it as that user, and no password rotation revokes an already-stolen 8-hour token.
+> Credentials and session cookies cross the network during onboarding, so confirm TLS is genuinely in effect first. Caddy terminates TLS, `app` publishes no host port, and `http://` redirects to `https://` — that part is structural. The two things an operator can still get wrong:
 >
-> **That is now closed.** Caddy terminates TLS in front of the app, `app` publishes no host port at all, and `http://` is redirected to `https://`. **Onboarding may proceed — on one condition:**
+> **1. `AUTH_URL` must be an `https://` URL.** Compose rejects it when unset, but a value of `http://...` starts happily and the guard cannot tell the difference. It no longer affects the session cookie (see below), but Auth.js builds its callback and redirect URLs from it. The only detector is the startup warning:
 >
-> - **`AUTH_URL` must be an `https://` URL.** Auth.js picks the `__Secure-` session-cookie prefix from that URL's protocol *alone*, ahead of any `X-Forwarded-Proto` header. `docker-compose.yml` declares `AUTH_URL` with no default, so a stack with it unset refuses to start — but a stack with it set to `http://...` starts happily, and the compose guard cannot tell the difference.
+> ```bash
+> curl -sk -o /dev/null "https://$SITE_ADDRESS/"      # the warning is lazy; see Operational notes
+> docker compose logs app --since 5m | grep '\[proxy\]'
+> ```
 >
->   **Two things now catch that, so you are not relying on the manual check below.** `src/auth.config.ts` pins `useSecureCookies: true` under `NODE_ENV=production` (which the shipped image sets), so the `Secure` attribute holds whatever the scheme says — the failure becomes a login that will not complete rather than a cookie in the clear. And `src/proxy.ts` logs `[proxy] AUTH_URL uses http:// ...` once per process, on the first matched request — so if you are looking for it on a freshly restarted stack that has served no traffic, make a request first. If logins fail immediately after go-live the traffic has already happened, and that line is the first thing to look for:
+> A `[proxy] AUTH_URL uses http://` line means fix `.env` and run `docker compose up -d app`.
 >
->   ```bash
->   docker compose logs app --since 5m | grep '\[proxy\]'
->   ```
+> **2. The session cookie must be `__Secure-` prefixed.**
 >
->   Check the cookie name anyway — it is the only end-to-end confirmation, and it has never been executed in this project.
+> Log in once and look at the session cookie in your browser's developer tools. **`__Secure-authjs.session-token`** is correct. A bare **`authjs.session-token`** means the app is not running with `NODE_ENV=production` — the shipped image sets it, so seeing the bare name in a container deployment means something is wrong with how the image was built or overridden, and sessions are travelling without the `Secure` attribute. Fix that before onboarding anyone.
 >
-> Verify before you hand out the first credential: log in once and look at the session cookie in your browser's developer tools. **`__Secure-authjs.session-token`** is correct. A bare **`authjs.session-token`** means `AUTH_URL` is not `https://` — fix that and restart `app` before onboarding anyone.
+> **It tells you nothing about `AUTH_URL`.** Measured in both arms: a correct `https://` value and a mistyped `http://` one both produce `__Secure-authjs.session-token` and a successful login, because `useSecureCookies` is pinned in production and no longer consults the URL. For `AUTH_URL` itself, use the `[proxy]` log line in check 1 above.
 >
-> **One-time session logout.** Changing `AUTH_URL` from `http://` to `https://` changes the cookie name, so every existing session becomes unreadable and everyone is logged out once. That is expected, not a defect — the same class of event as Phase 7's `tokenVersion` rollout. Nobody's account, password or data is affected; they log in again and continue.
-
-### Order matters: apply the migration *before* the app restarts
-
-**Run `npm run db:migrate:deploy` (see "Database migration" above) and confirm it succeeded before starting or restarting the `app` and `email-poller` containers on any upgrade that includes new columns.** This is not a preference — with application code running ahead of its schema, this app does not degrade partially, it fails completely and misleadingly:
-
-- `authorize()` (`src/auth.ts`) looks the user up with `findUnique` and **no `select` clause**, so Prisma asks Postgres for every column the current schema defines.
-- If a column the code knows about does not yet exist in the database, Prisma raises **P2022** (`The column ... does not exist in the current database`) on that query — and therefore on *every* login attempt and every authenticated page load.
-- `loginAction` translates any failure from `authorize()` into the same anti-enumeration message the wrong password produces: **"Invalid email or password"**. Every user sees it. **Including every admin.** There is no in-app escape hatch, no error detail, and nothing in the UI that says "run a migration": recovering requires shell access to the host and `docker compose logs app` (or `psql`) to see the real P2022 underneath.
-
-So the safe upgrade order on an existing deployment is: pull → `npm install && npx prisma generate` → **`npm run db:migrate:deploy`** → `docker compose build` → `docker compose up -d`. On a brand-new deployment, `docker compose up -d` before the migration is harmless *provided nobody tries to log in* until `db:migrate:deploy` has run.
-
-`scripts/create-admin.ts` (below) detects P2022 itself and prints this same guidance rather than a raw Prisma stack trace, so if you bootstrap the admin before restarting anything, the script tells you the migration is missing.
+> **On upgrades from a pre-Phase-8 deployment, expect one forced logout.** A deployment that previously ran without `NODE_ENV=production`, or before `useSecureCookies` was pinned, issued bare `authjs.session-token` cookies. The cookie name is the encryption salt, so those sessions cannot be read under the `__Secure-` name and everyone is logged out once at the upgrade. That is expected, not a defect — the same class of event as Phase 7's `tokenVersion` rollout. Nobody's account, password or data is affected. (Changing `AUTH_URL`'s scheme alone does **not** do this any more, because the cookie name no longer depends on it.)
 
 ### Create the admin: `npm run bootstrap:admin`
 
@@ -438,7 +467,7 @@ The operational consequence is that **a deactivated person is never told they we
 ## First-run verification
 
 **Do not rely on the seeded demo users for a real deployment.** `prisma/seed.ts` creates five test accounts (`technician@mspdemo.local`, `dispatcher@mspdemo.local`, `sales@mspdemo.local`, `finance@mspdemo.local`, `admin@mspdemo.local`), all sharing a single well-known password (`Password123!`). It exists for local development and for the E2E suite's login fixture. **The seed script now refuses by default, everywhere.** It runs only with an explicit
-`ALLOW_DEMO_SEED=true` on the command line:
+`ALLOW_DEMO_SEED=true` in the environment — set it inline, for the one command:
 
 ```bash
 set -a; . ./.env; set +a
@@ -525,7 +554,12 @@ docker compose down          # stop AND REMOVE containers + the network; volumes
 >
 > If your goal is "restart cleanly", `docker compose down && docker compose up -d` already does that. Reach for `-v` only to deliberately destroy a deployment that has never held real data. The same applies to `docker volume prune` and `docker system prune --volumes`.
 
-If you are running the email poller, add the profile flag so it is included: `docker compose --profile email down`. Without it, a running `email-poller` is left behind.
+If you are running the email poller, add the profile flag so it is included: `docker compose --profile email down`. Without it, a running `email-poller` is left behind — **and `down` still exits 0 and prints nothing that looks like a failure**, so the only way to know is to check. After any shutdown on a poller deployment:
+
+```bash
+docker compose --profile email down
+docker ps            # must list nothing from this project
+```
 
 ### Backup
 
@@ -560,17 +594,15 @@ docker compose start app
 
 > **Why `stop app` and not "restore into a running stack".** The dump begins with `--clean` statements that need an `AccessExclusiveLock`, and **any** application session sitting in an open transaction holds a conflicting `AccessShareLock` that blocks it. The restore then prints its short `SET` preamble and **stops with no further output** until the transaction ends. Measured, so you can reproduce both halves: a connection that has run a query and gone genuinely idle (`pg_stat_activity.state = 'idle'`) holds **no** relation locks and the restore completes in about a second — but one session left `idle in transaction` blocks it indefinitely (killed at a timeout). A serving `app` opens and closes transactions continuously, so whether a restore succeeds or hangs is a race you do not want to run during an incident.
 >
-> An earlier revision of this note blamed "one idle `app` container". That was wrong — an idle backend holds nothing — and it is corrected here rather than quietly dropped, because the remedy is the same either way and the wrong reason invites someone to test it, find the restore completes, and skip the step. Worse, when it *does* block, the queued exclusive-lock request blocks every subsequent application query behind it, so attempting recovery takes the site down harder than the incident did. Earlier revisions also said "restore into a running stack"; that instruction was wrong.
+> When it does block, the queued exclusive-lock request blocks every subsequent application query behind it, so attempting recovery takes the site down harder than the incident did. Note that an *idle* connection alone will not reproduce this — the restore completes in about a second — so do not treat one successful test as licence to skip the step.
 >
-> `--single-transaction` is what makes a blocked restore safe to kill: verified by killing one mid-flight, the database was left completely intact.
->
-> `--single-transaction` is the second half: without it, a failure partway through `ON_ERROR_STOP=1` leaves a half-dropped schema with no way back. With it, a failed restore rolls back to the pre-restore state.
+> **`--single-transaction` is the other half.** Without it, a failure partway through `ON_ERROR_STOP=1` leaves a half-dropped schema with no way back; with it, a failed restore rolls back to the pre-restore state. Verified by killing a blocked restore mid-flight: the database was left completely intact.
 
 Four things the database dump does **not** cover:
 
 1. **`.env`** — `POSTGRES_PASSWORD`, `AUTH_SECRET` and every integration secret. Back it up separately, encrypted, mode `0600` at rest, and never into the same bucket as the dump.
 2. **`TOKEN_ENCRYPTION_KEY` specifically.** QuickBooks access/refresh tokens are stored encrypted in the database, so a dump restored **without** the matching key leaves those rows undecryptable and the QBO connection must be re-established at `/admin/quickbooks`. The database being intact is not sufficient.
-3. **`caddy_data`.** Not worth backing up — Caddy re-issues — but see the rate-limit warning above before destroying it casually.
+3. **`caddy_data`.** Not worth backing up — Caddy re-issues — but see the **Let's Encrypt** rate-limit warning above (not the application's `RATE_LIMIT_*` limiter) before destroying it casually.
 4. **`poller_state`.** Only relevant on an `email`-profile deployment. It is a single timestamp, so it is not worth a backup either — but restoring a database dump does **not** rewind the poller, and the two can disagree: mail polled after the dump was taken is gone from the restored database while the watermark still says it was processed. After any restore on a poller deployment, stop the poller, delete `poller_state`, and let it resume from `now()` rather than re-reading mail it has no tickets for.
 
 **An untested backup is not a backup.** Restore one into a scratch stack (a separate `DB_PORT`, a separate project name via `-p`) and log in against it before you rely on this procedure — on *your* data, which is the only test that counts.
@@ -582,6 +614,39 @@ The procedure itself is no longer unobserved. It was round-tripped end to end du
 No `restart:` policy is set on any service. Nothing comes back on its own: run `docker compose up -d` (plus `--profile email` if used). If this deployment must survive reboots unattended, add `restart: unless-stopped` to each service in `docker-compose.yml` or manage the stack with a systemd unit — a deliberate operator decision this repository does not make for you.
 
 ---
+
+## Rotating `AUTH_SECRET`
+
+Rotate when the secret may have been exposed — a leaked `.env`, a departed administrator who had host access, or a routine schedule. Done correctly this is invisible to users; done with the wrong command it silently does nothing, and done without the rotation slot it logs everyone out.
+
+1. **Generate the new secret** and edit `.env` so the *old* value moves into the slot:
+
+   ```
+   AUTH_SECRET=<new value from `npx auth secret`>
+   AUTH_SECRET_1=<the value AUTH_SECRET had until now>
+   ```
+
+   `AUTH_SECRET` signs new sessions; `AUTH_SECRET_1` is decode-only, so sessions issued under the old value keep working.
+
+2. **Recreate the container:**
+
+   ```bash
+   docker compose up -d app
+   ```
+
+   > **Not `docker compose restart app`.** `restart` reuses the existing container, and a container's environment is fixed when it is created — so `restart` keeps the *old* secret while printing `Started` and exiting 0. Measured: after editing `.env` and running `restart`, the container still had the old `AUTH_SECRET` and no `AUTH_SECRET_1` at all. Every signal says it worked. Nobody gets logged out, which is also the success criterion for a correct rotation, so the two are indistinguishable from the outside. You would then drop `AUTH_SECRET_1` on schedule, and the next unrelated recreate would apply the new secret with no decode slot left — logging everyone out weeks later, with the compromised secret live the whole time.
+
+3. **Verify it actually took effect**, which is the step that separates the two cases:
+
+   ```bash
+   docker compose exec app printenv AUTH_SECRET AUTH_SECRET_1
+   ```
+
+   Both must print, and `AUTH_SECRET` must be the new value. Then confirm a session predating the rotation still resolves: stay logged in in an existing browser tab and reload a page — you should not be sent to `/login`.
+
+4. **Drop the slot** once every session older than the 8-hour `maxAge` has expired: remove `AUTH_SECRET_1` from `.env` and run `docker compose up -d app` again.
+
+Rotating `TOKEN_ENCRYPTION_KEY` has no equivalent safe procedure: QuickBooks tokens are encrypted at rest with it, so changing it makes existing stored connections undecryptable and QuickBooks must be re-connected at `/admin/quickbooks`. There is no second-slot mechanism for that key.
 
 ## Operational notes
 
@@ -606,11 +671,15 @@ No `restart:` policy is set on any service. Nothing comes back on its own: run `
   Raise `RATE_LIMIT_GENERAL` if legitimate traffic from a NAT'd office (many technicians sharing one public IP) is being throttled; lower `RATE_LIMIT_AUTH` to tighten brute-force protection on an internet-exposed deployment. A value that is not a positive integer is **rejected**, not obeyed: `0`, a negative, a fraction, an empty string or anything non-numeric falls back to the default and logs a `[proxy]` warning naming the variable, the offending value and the default applied. Check for the warning like this, after the restart:
 
   ```bash
-  curl -s -o /dev/null http://127.0.0.1/            # make the proxy module load
+  curl -sk -o /dev/null "https://$SITE_ADDRESS/"    # make the proxy module load
   docker compose logs app --since 5m | grep '\[proxy\]'
   ```
 
-  **The request is not optional.** These warnings are emitted once per process, and Next.js instantiates the proxy module lazily on the first matched request — measured on Next 16.3.3: a freshly restarted `app` logs nothing at all until traffic arrives. An operator who restarts during a maintenance window and greps the log before re-admitting traffic gets an empty result and concludes the value was accepted. `--since` guards the other end: container logs are capped (see "Log retention" below), so an old warning can be rotated away and also read as clean. A typo cannot disable rate limiting, but it can leave you thinking a change took effect when it did not.
+  **The request is not optional, and it must be `https://`.** These warnings are emitted once per process, and Next.js instantiates the proxy module lazily on the first matched request — measured on Next 16.3.3: a freshly restarted `app` logs nothing at all until traffic arrives. An operator who restarts during a maintenance window and greps the log before re-admitting traffic gets an empty result and concludes the value was accepted.
+
+  > **Why not `http://`.** The `Caddyfile` has one site block and no `:80` block, so Caddy's automatic-HTTPS redirect vhost answers **every** plaintext request with a 308 at the edge — measured: `curl http://127.0.0.1:${HTTP_PORT}/`, and the same request carrying `Host: $SITE_ADDRESS`, both return 308 and **neither reaches `app`**. The proxy module never loads and the grep is then empty for exactly the wrong reason. Use the site's own hostname over HTTPS. `-k` is only needed while the certificate is Caddy's internal CA; drop it once a public certificate is issued. If DNS does not point here yet: `curl -sk --resolve "$SITE_ADDRESS:443:127.0.0.1" "https://$SITE_ADDRESS/"`.
+
+  `--since` guards the other end: container logs are capped (see "Log retention" below), so an old warning can be rotated away and also read as clean. A typo cannot disable rate limiting, but it can leave you thinking a change took effect when it did not.
 
 - **Ownership-scoped ticket delete has no UI entry point**: Phase 6 added an ownership check to `deleteTicket` (a `technician` may only delete a ticket assigned to them; `dispatcher`/`admin` are unrestricted) at the Server Action level, but no delete button, menu, or affordance exists anywhere in the UI to invoke it — confirmed by a full-project search finding zero references to `deleteTicket` outside its own definition. This is not a deployment blocker (the function is simply unreachable, not broken), but operators should be aware that "ticket deletion" is not currently an available feature through the UI at all, for any role, despite the underlying authorization logic being in place.
 
@@ -620,4 +689,4 @@ No `restart:` policy is set on any service. Nothing comes back on its own: run `
 
 - **QuickBooks Item-mapping caveat**: `src/lib/actions/invoices.ts` (around line 352-367, `SalesItemLineDetail`) hardcodes `ItemRef.value` to `"1"` for every invoice line pushed to QuickBooks Online. QBO requires each line to reference a real `Item` entity configured in the target QBO company (commonly the default "Services" item, which is often ID `1`, but this is **not guaranteed** across every QBO company/chart-of-accounts configuration). This codebase has no Item-mapping concept — it does not look up or let the operator configure which QBO Item ID each invoice line should reference. **Before relying on QBO push in production, confirm that ID `1` actually resolves to a valid, appropriate Item in your specific QBO company** (check via QBO's own UI or API), or invoice pushes will fail or post against the wrong item. This is a known, accepted limitation carried into Phase 6, not something this phase's scope included fixing.
 
-- **Rebuilding after code changes**: any future code change requires `docker compose build` followed by `docker compose up -d` to pick it up (Compose will recreate only the containers whose image changed). Database migrations added after this document's writing should be applied with `npm run db:migrate:deploy` per the "Database migration" section above, every time new migrations are pulled.
+- **Rebuilding after code changes**: **apply migrations first.** The full, safe sequence is under "Upgrades: order matters" — read it before your first upgrade, because getting this backwards raises Prisma **P2022** on every request and reports "Invalid email or password" to everyone including every admin, with no in-app way back. In short: `npm run db:migrate:deploy` from the host, *then* `docker compose build`, *then* `docker compose up -d` (Compose will recreate only the containers whose image changed).

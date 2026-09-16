@@ -55,12 +55,19 @@ export const authConfig: NextAuthConfig = {
   // it checks presence, not scheme.
   //
   // Pinning this to true in production takes the decision away from a value an
-  // operator can typo. A genuinely plaintext production deployment now fails at
-  // login (the browser will not return a Secure cookie over http) instead of
-  // silently issuing a replayable one -- fail closed at the boundary.
-  // warnOnInsecureAuthUrl() in src/proxy.ts logs the explanation for that
-  // failure. Development is unaffected: the gate is NODE_ENV only, so
-  // http://localhost keeps working.
+  // operator can typo: the cookie stays Secure even when AUTH_URL says http://.
+  //
+  // The trade-off, measured rather than assumed: because the URL is no longer
+  // consulted, a wrong AUTH_URL becomes INVISIBLE in the cookie. Production
+  // build, both arms identical -- AUTH_URL=https://... and AUTH_URL=http://...
+  // each return 302 from the credentials callback and set
+  // __Secure-authjs.session-token with the Secure attribute. Login does not
+  // fail, and the cookie name does not change. Anything that tells an operator
+  // to detect a bad AUTH_URL by reading the cookie name is wrong; the only
+  // detector is warnOnInsecureAuthUrl() in src/proxy.ts.
+  //
+  // Development is unaffected: the gate is NODE_ENV only, so http://localhost
+  // keeps working.
   useSecureCookies: process.env.NODE_ENV === "production" ? true : undefined,
   providers: [],
   callbacks: {

@@ -66,9 +66,14 @@ services:
       - AUTH_SECRET_1
       - AUTH_SECRET_2
       - AUTH_SECRET_3
-      # No :- default. An unset AUTH_URL behind TLS silently yields a non-Secure
-      # session cookie: Auth.js picks the __Secure- prefix from url.protocol
-      # alone (src/lib/session.ts), with no error to notice.
+      # No :- default: AUTH_URL is where Auth.js builds its callback and redirect
+      # URLs from, so a wrong value sends users to the wrong origin.
+      #
+      # It no longer controls the cookie. src/auth.config.ts pins
+      # useSecureCookies in production, so the __Secure- prefix holds whatever
+      # the scheme says -- which also means a mistyped http:// is INVISIBLE in
+      # the cookie (measured: both schemes give a 302 and the same __Secure-
+      # cookie). src/proxy.ts's warnOnInsecureAuthUrl() is the only detector.
       - AUTH_URL=${AUTH_URL:?AUTH_URL is required and must be the public https URL, e.g. https://psa.example.com}
       - AUTH_TRUST_HOST=${AUTH_TRUST_HOST:-true}
       # Optional rate-limit overrides read by src/proxy.ts once per process.

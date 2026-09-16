@@ -62,17 +62,18 @@ it. Two properties are load-bearing and easy to break:
   it there would let a revoked token silently self-heal.
 - The claim is read from the **raw JWT**, never from `Session`, and is deliberately absent
   from the `Session` type augmentation — anything on `Session` is served to any client by
-  `GET /api/auth/session`, which is exempt from the middleware gate.
+  `GET /api/auth/session`, which is exempt from the proxy's session gate.
 
 A token carrying *no* `tokenVersion` claim is refused, not defaulted to 0. `getCurrentUser()`
 also **fails closed**: a throwing lookup is not caught, so a database outage or an unapplied
 migration surfaces as an error rather than as a silent app-wide logout.
 
-**Two runtimes, one boundary.** `src/auth.config.ts` is Edge-safe (no adapter, no bcrypt,
-no Prisma) and is consumed by `src/middleware.ts`. `src/auth.ts` is the Node-runtime module
-adding the Credentials provider and JWT callbacks. Middleware performs only a coarse
+**Two runtimes, one boundary.** `src/auth.config.ts` carries no adapter, bcrypt or Prisma
+import and is consumed by `src/proxy.ts` (the Next.js 16 Proxy convention, which replaced
+`src/middleware.ts` in Phase 8 and runs on the Node runtime). `src/auth.ts` is the module
+adding the Credentials provider and JWT callbacks. The proxy performs only a coarse
 "is there a session cookie" check plus rate limiting; the authoritative role gate is always
-server-side. `src/lib/session.ts` is strictly Node-runtime — never import it from middleware.
+server-side. `src/lib/session.ts` is strictly Node-runtime — never import it from the proxy.
 
 The three highest fan-in modules are `db` (33 importers), `session` (32) and `permissions`
 (30); a change to any of them touches most of the app.
@@ -146,11 +147,11 @@ Notable: `users.ts` (5), `tickets.ts` (5), `time-entries.ts` (4), `invoices.ts` 
 | `TOKEN_ENCRYPTION_KEY` | `src/lib/crypto.ts` | Yes (QBO) |
 | `QBO_CLIENT_ID`, `QBO_CLIENT_SECRET`, `QBO_REDIRECT_URI`, `QBO_ENVIRONMENT` | `src/lib/qbo.ts` | QBO only |
 | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `MAILBOX_ADDRESS` | `scripts/email-poller.ts` (fails fast) | Poller only |
-| `ALLOW_DEMO_SEED` | `prisma/seed.ts` | Required opt-in. The seed refuses everywhere without an exact `ALLOW_DEMO_SEED=true` on the command line; `ALLOW_SEED_IN_PRODUCTION` is no longer read at all |
+| `ALLOW_DEMO_SEED` | `prisma/seed.ts` | Required opt-in. The seed refuses everywhere without an exact `ALLOW_DEMO_SEED=true` in the environment (set inline for one command — never in `.env`); `ALLOW_SEED_IN_PRODUCTION` is no longer read at all |
 | `E2E_BASE_URL`, `E2E_PORT` | `e2e/target.ts` | E2E only |
 | `DB_PORT`, `NODE_ENV`, `CI` | Compose / tooling | No |
 
-`docker-compose.yml` runs three services — `app`, `email-poller`, `db` (postgres:16-alpine).
+`docker-compose.yml` defines **four** services: `caddy` (TLS-terminating reverse proxy, the only published ingress), `app` (no published port — reachable only as `app:3000` on the internal network), `db` (postgres:16-alpine, bound to `127.0.0.1`), and `email-poller` (behind Compose profile `email`, not started by a default `up`).
 
 ## Test & Coverage Map
 
@@ -171,18 +172,20 @@ Unit coverage remains a single file: `src/lib/__regression__/reporting.regressio
 
 ## Risk Hotspots
 
-1. **`X-Forwarded-For` is still attacker-controlled.** `getClientIp()` trusts a
-   client-settable header and `docker-compose.yml` publishes `app` on `3000` with no
-   reverse proxy, so the rate limiter is a no-op against a deliberate attacker. Partially
-   hardened: an unidentifiable client now returns `null` and is skipped rather than sharing
-   one bucket (which had produced a measured DoS). ROADMAP Phase 8 owns the real fix.
-2. **`src/middleware.ts` uses a convention Next.js 16 deprecated.** `middleware.js` is
-   renamed to `proxy.js`; Proxy runs on the Node runtime and cannot be configured back to
-   Edge. Codemod: `npx @next/codemod@canary middleware-to-proxy .`
-3. **Default database credentials.** `postgres:postgres` is inline in `POSTGRES_PASSWORD`
-   *and* both `DATABASE_URL`s, with `${DB_PORT:-5432}` published to the host.
-4. **Ticket delete destroys billing records** (see Data Model). `deleteTicket` still has
+1. **Ticket delete destroys billing records** (see Data Model). `deleteTicket` still has
    zero call sites in `src/`.
+2. **The production image runs as root with the dev toolchain.** `Dockerfile`'s runner
+   stage installs dev dependencies and copies `prisma/seed.ts` in, and defines no `USER`.
+   Deliberately deferred past Phase 8 as a blast-radius item, not an exposure — `app`
+   publishes no host port, so reaching it means already being past Caddy or on the Compose
+   network.
+
+**Closed by Phase 8** (recorded because these were this file's top three hotspots and a
+reader may remember them): `X-Forwarded-For` is no longer attacker-controlled — `app`
+publishes no port and the `Caddyfile` overwrites both address headers at the boundary;
+`src/middleware.ts` has been migrated to `src/proxy.ts`; and the default `postgres:postgres`
+credentials are gone, replaced by `${POSTGRES_PASSWORD:?}` at all three sites with the `db`
+port bound to `127.0.0.1`. See `ROADMAP.md` Phase 8.
 5. **`ItemRef` hardcoded** to `{ value: "1" }` in `invoices.ts` — every QBO invoice line
    points at the same item.
 6. **Three E2E specs have never run.** The `advisory` project is evidence, not a gate;

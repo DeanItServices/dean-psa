@@ -178,12 +178,13 @@ function warnOnInsecureAuthUrl(): void {
     // (https://user:pass@host) would otherwise be written to the app log verbatim.
     console.warn(
       `[proxy] AUTH_URL uses ${parsed.protocol}// (host ${parsed.host}), not https://. ` +
-        "In production this makes Auth.js issue a session cookie WITHOUT the __Secure- " +
-        "prefix, so it travels over plain HTTP. Set AUTH_URL to the public https:// URL " +
-        "and restart. Note the app also forces Secure cookies in production " +
-        "(src/auth.config.ts), so with a non-https AUTH_URL login will FAIL rather than " +
-        "silently downgrade -- that is the intended fail-closed behaviour, and this " +
-        "warning is the explanation for it.",
+        "The session cookie is NOT affected -- src/auth.config.ts pins useSecureCookies " +
+        "in production, so it stays __Secure- and Secure whatever this value says. But " +
+        "Auth.js builds its callback and redirect URLs from AUTH_URL, so a wrong scheme " +
+        "sends users to the wrong origin. Set AUTH_URL to the public https:// URL and " +
+        "run `docker compose up -d app` (not `restart`, which keeps the old " +
+        "environment). This line is the ONLY signal for a non-https AUTH_URL: login " +
+        "still succeeds and the cookie name is unchanged, both measured.",
     );
   }
 }
@@ -292,17 +293,14 @@ function cleanupStaleEntries(now: number) {
  * adding that line. Also verified: with `trusted_proxies 0.0.0.0/0` AND
  * `header_up` set, upstream still saw only the peer address.
  *
- * ONE SHARP EDGE, MEASURED: as of the measurement below, the Caddyfile
- * overwrote X-Forwarded-For and ONLY X-Forwarded-For, so a forged
- * `X-Real-IP` passed straight through to this function (verified: forging
- * both through the shipped config, the upstream saw
- * `X-Forwarded-For: <peer>` but `X-Real-IP: 66.66.66.66`).
- *
- * CHECK THE CADDYFILE RATHER THAN THIS PARAGRAPH for whether that is still
- * true: if a `header_up X-Real-IP {remote_host}` line has since been added
- * alongside the X-Forwarded-For one, that second header is overwritten too
- * and the pass-through is closed at the proxy. If it has not, the finding
- * above stands as written. This function is correct EITHER WAY, and for the
+ * CLOSED, was a sharp edge: an earlier revision of the Caddyfile overwrote
+ * X-Forwarded-For and ONLY X-Forwarded-For, so a forged `X-Real-IP` passed
+ * straight through to this function (measured at the time: the upstream saw
+ * `X-Forwarded-For: <peer>` but `X-Real-IP: 66.66.66.66`). The shipped
+ * Caddyfile now carries `header_up X-Real-IP {remote_host}` alongside the
+ * X-Forwarded-For line, so both headers are overwritten at the proxy and the
+ * pass-through is gone. Kept as a note because deleting that second line
+ * reopens it silently. This function is correct EITHER WAY, and for the
  * same reason in both: the order below reads x-forwarded-for first, and
  * Caddy sets that header on every proxied request, so the x-real-ip branch
  * is unreachable in the shipped topology whatever the Caddyfile does with

@@ -1,10 +1,10 @@
 # Project State
 
 ## Current Position
-- **Phase**: 8 of 9 (executed, pending review)
-- **Status**: Phase 8 complete -- all 4 plans executed successfully across 3 waves
-- **Last Activity**: Phase 8 execution complete (2026-09-16)
-- **Next Action**: Run `/legion:review` to verify Phase 8: Deployment Hardening
+- **Phase**: 8 of 9 (reviewed, PASSED)
+- **Status**: Phase 8 complete and reviewed -- 4 plans across 3 waves, then 4 review cycles. 11 blockers found and closed, each verified by execution. See `phases/08-deployment-hardening/08-REVIEW.md`.
+- **Last Activity**: Phase 8 review complete (2026-09-16), final commit `54ff304`
+- **Next Action**: Phase 9, or open a PR for Phase 8
 
 ## Progress
 ```

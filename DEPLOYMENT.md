@@ -17,8 +17,19 @@ Every command below matches a real script in `package.json`, a real Docker Compo
   ```
 
   For other distros/OSes, use [nvm](https://github.com/nvm-sh/nvm) or the official installer from [nodejs.org](https://nodejs.org).
+- **A PostgreSQL client (`psql`) on the host.** Not optional, and not covered by having Postgres in a container: `npm run db:migrate:deploy` chains `bash scripts/post-migrate.sh`, which shells out to `psql` (line 52) against the published loopback port.
+
+  ```bash
+  sudo apt install -y postgresql-client     # Debian/Ubuntu
+  # Fedora/RHEL: sudo dnf install -y postgresql
+  # macOS:       brew install libpq   (then add its bin/ to PATH)
+  ```
+
+  **What breaks without it is worse than a missing command.** `prisma migrate deploy` is the *first* half of that chain and it **succeeds**, so the migration output looks clean; the script then dies at `psql: command not found`, and the `TimeEntry_one_active_timer_per_user` partial index — the one thing `post-migrate.sh` exists to guarantee, because Prisma's schema DSL cannot express it — is **silently absent**. Nothing downstream announces this. Check with `psql --version` before migrating, and see "Database migration" below for how to confirm the index landed.
 - Git access to clone this repository.
-- **A public DNS name pointing at this host.** Caddy obtains a real TLS certificate for it via the ACME HTTP-01 challenge; there is no self-signed fallback and no manual certificate path in this repository.
+- **A public DNS name pointing at this host.** Caddy obtains a real TLS certificate for it via ACME (HTTP-01 on :80, or TLS-ALPN-01 on :443 — the shipped `Caddyfile` sets no `tls`/`acme` directive, so both challenges stay enabled and Caddy uses whichever succeeds). There is no self-signed fallback and no manual certificate path in this repository.
+
+  > **Not verified in this project.** No publicly-trusted certificate was ever issued against this configuration during Phase 8. Every TLS observation recorded here or in the `Caddyfile` came from Caddy's **internal CA** answering for `localhost`, which exercises none of the ACME path. First-boot issuance is untested — watch `docker compose logs -f caddy` on the first real request rather than assuming it worked.
 - Outbound network access from the host to:
   - Let's Encrypt's ACME endpoints (`acme-v02.api.letsencrypt.org`) — required for certificate issuance and renewal. Without it Caddy starts, serves nothing over TLS, and retries in the background.
   - Microsoft Graph API (`login.microsoftonline.com`, `graph.microsoft.com`) if the email-to-ticket poller will be used.
@@ -32,20 +43,35 @@ As of Phase 8 the only internet-facing service is Caddy. `docker-compose.yml` pu
 |---------|-----------------|----------------|
 | `caddy` | `${HTTP_PORT:-80}:80`, `${HTTPS_PORT:-443}:443` | the public internet — this is the intended ingress |
 | `app` | **none** | the internal Compose network only, at `app:3000` |
-| `email-poller` | **none** | nothing (outbound-only polling process) |
+| `email-poller` | **none** | nothing (outbound-only polling process; opt-in via Compose profile `email`) |
 | `db` | `127.0.0.1:${DB_PORT:-5432}:5432` | **this host only** — loopback-scoped, not the LAN, not the internet |
 
 Three consequences worth stating explicitly:
 
 - **`app` is no longer directly reachable.** Publishing `3000` again would let a client reach the application without passing through Caddy — and forge `X-Forwarded-For` on the way in. Do not re-add that mapping.
-- **Inbound TCP :80 must be open to the internet**, not only :443. Caddy answers the ACME HTTP-01 challenge on port 80 and redirects `http://` to `https://` itself. Blocking :80 does not "force HTTPS"; it prevents certificate issuance entirely, and the site then serves no TLS at all.
-- **Postgres is reachable from this host only.** The loopback bind keeps host-side tooling (`npm run db:migrate:deploy`, `npm run db:seed`, `npm run bootstrap:admin`, the E2E suite) working without exposing the database to the network. A Postgres client on another machine cannot connect; tunnel over SSH if you need one.
+- **Inbound TCP :80 should be open to the internet**, not only :443. Two reasons, and it is worth being precise about which is which:
+  1. **The `http://` → `https://` redirect lives on :80.** Block it and a user who types the bare hostname gets a connection failure, not a redirect. Blocking :80 does not "force HTTPS" — it just breaks the path that sends people to HTTPS.
+  2. **HTTP-01 is the issuance fallback.** Because no `tls`/`acme` directive is set, TLS-ALPN-01 on :443 is *also* live, so strictly speaking a :443-only host can still get a certificate. Do not rely on that: closing :80 removes the second challenge, leaving issuance with no retry path if TLS-ALPN-01 fails.
+- **Postgres is reachable from this host only.** The loopback bind keeps host-side tooling (`npm run db:migrate:deploy`, `npm run db:seed` (development only — refuses without `ALLOW_DEMO_SEED=true`), `npm run bootstrap:admin`, the E2E suite) working without exposing the database to the network. A Postgres client on another machine cannot connect; tunnel over SSH if you need one.
 
 **Rate limiting — what it does and does not give you.** `src/proxy.ts` applies an in-memory, IP-keyed fixed-window rate limiter: by default 60 requests/60s per IP for general routes, and a tighter 10 requests/60s per IP for the credential-check surface (`/api/auth/*` and `POST /login`).
 
-- **It now keys on a trustworthy value.** `X-Forwarded-For` and `X-Real-IP` are ordinary client-settable headers, so before Phase 8 — with `app` published directly and nothing in front of it — a client could send a fresh forged IP on every request and bypass the limiter entirely, brute-force protection included. The `Caddyfile` closes that: `header_up X-Forwarded-For {remote_host}` replaces the header with Caddy's own observation of the peer address, which is the entry the limiter reads. That holds unconditionally, not just under Caddy's default behaviour — see the trust-boundary comment on `getClientIp()` in `src/proxy.ts` for the full reasoning and the two remaining ways to lose it (re-publishing `app`'s port, and a Docker daemon that does not preserve source addresses).
-- **Do not delete the `header_up` line on Caddy's advice.** `caddy validate` emits `Unnecessary header_up X-Forwarded-For: the reverse proxy's default behavior is to pass headers to the upstream` — a lint heuristic that is wrong here. Verified live on `caddy:alpine` v2.11.4 by forging `X-Forwarded-For: 66.66.66.66, 7.7.7.7` through three configurations: bare `reverse_proxy` dropped it (upstream saw the peer), `reverse_proxy` plus `trusted_proxies 0.0.0.0/0` forwarded it **attacker-value-first** (`66.66.66.66, 7.7.7.7, <peer>`), and the shipped `Caddyfile` dropped it in both cases. The directive is what makes the guarantee independent of `trusted_proxies` and of whichever Caddy version the floating `:alpine` tag resolves to.
-- **After go-live, confirm Caddy sees real client addresses.** `docker compose logs caddy` should show varied `remote_ip` values. If every entry is the same bridge-gateway address, the Docker daemon is routing published ports through the userland `docker-proxy` rather than iptables DNAT, and the limiter is bucketing the entire internet together — which does not weaken it so much as turn it into a lockout for staff and attacker alike.
+- **It now keys on a trustworthy value.** `X-Forwarded-For` and `X-Real-IP` are ordinary client-settable headers, so before Phase 8 — with `app` published directly and nothing in front of it — a client could send a fresh forged IP on every request and bypass the limiter entirely, brute-force protection included. The `Caddyfile` closes that: `header_up X-Forwarded-For {remote_host}` and `header_up X-Real-IP {remote_host}` replace **both** headers `getClientIp()` reads with Caddy's own observation of the peer address. It also strips the two remaining address-bearing headers a client can set (`header_up -Forwarded`, `header_up -X-Forwarded-Port`) — nothing reads those today, so that part is pre-emptive rather than a live fix. That holds unconditionally, not just under Caddy's default behaviour — see the trust-boundary comment on `getClientIp()` in `src/proxy.ts` for the full reasoning and the two remaining ways to lose it (re-publishing `app`'s port, and a Docker daemon that does not preserve source addresses).
+
+  Covering `X-Real-IP` too is not redundant. `getClientIp()` reads `X-Forwarded-For` first and only falls back to `X-Real-IP`, and Caddy always sets the former — so a forged `X-Real-IP` was never reachable. But that made the guarantee depend on the *order of two statements inside application code*, where a future refactor can quietly invert it. Verified before the fix: upstream saw `XFF=[<peer>] XRI=[66.66.66.66]`. Verified after: `XFF=[<peer>] XRI=[<peer>] FWD=[] XFP=[]`.
+- **Do not delete the `header_up` line on Caddy's advice.** `caddy validate` emits `Unnecessary header_up X-Forwarded-For: the reverse proxy's default behavior is to pass headers to the upstream` — a lint heuristic that is wrong here. **This warning is expected on every run and is also called out in the `Caddyfile` itself**, right above the line, since that is where someone acting on the advice is actually looking. Verified live on `caddy:alpine` v2.11.4 by forging `X-Forwarded-For: 66.66.66.66, 7.7.7.7` through three configurations: bare `reverse_proxy` dropped it (upstream saw the peer), `reverse_proxy` plus `trusted_proxies 0.0.0.0/0` forwarded it **attacker-value-first** (`66.66.66.66, 7.7.7.7, <peer>`), and the shipped `Caddyfile` dropped it in both cases. The directive is what makes the guarantee independent of `trusted_proxies` and of whichever Caddy version the floating `:alpine` tag resolves to.
+- **Nothing may sit in front of Caddy.** The point above is about *bypass* — reaching `app` without passing through Caddy. This one is the opposite direction and is easy to miss: putting Cloudflare, an edge nginx, an ALB or any other proxy **in front of** this deployment breaks the guarantee just as thoroughly, because `{remote_host}` then observes *that proxy*, not the client. Every request on earth arrives as one address and lands in one rate-limit bucket — demonstrated by chaining two Caddies, where all clients collapsed into a single address. This is a lockout, not a bypass, and it looks identical to the `docker-proxy` symptom below.
+
+  If you must front this deployment, the `header_up` lines are no longer correct: replace them with `trusted_proxies <CIDR of the fronting proxy>` so Caddy appends rather than overwrites, and revisit `getClientIp()` in `src/proxy.ts`, which takes entry **0** of `X-Forwarded-For` and would then be reading the client-supplied end of the chain. Neither change is shipped here, and this configuration assumes Caddy is the first hop.
+- **After go-live, confirm Caddy sees real client addresses.** The `Caddyfile`'s `log` directive writes one JSON access-log line per request to stdout, so:
+
+  ```bash
+  docker compose logs caddy | grep -o '"remote_ip":"[^"]*"' | sort | uniq -c | sort -rn
+  ```
+
+  should show **varied** `remote_ip` values. If every entry is the same bridge-gateway address (e.g. `172.18.0.1`), the Docker daemon is routing published ports through the userland `docker-proxy` rather than iptables DNAT, and the limiter is bucketing the entire internet together — which does not weaken it so much as turn it into a lockout for staff and attacker alike. A fronting proxy (previous bullet) produces the same single-address picture from a completely different cause; rule that out first.
+
+  If this command prints **nothing at all**, the `log` directive is missing from the `Caddyfile` — Caddy emits zero per-request logs without it, and the check silently reads as "nothing wrong". Confirm with `grep -c '^\s*log$' Caddyfile`.
 - **It is still a speed bump, not a production-grade or distributed limiter.** The counter is per-process and in-memory: it resets on container restart, and a second `app` replica would track its own independent counters, effectively multiplying the real limit by the replica count. For a defense-in-depth layer in front of it, Caddy's own `rate_limit` module or an upstream WAF is the place to add one.
 - **The thresholds are operator-tunable at runtime.** `RATE_LIMIT_WINDOW_MS` (default `60000`), `RATE_LIMIT_GENERAL` (default `60`) and `RATE_LIMIT_AUTH` (default `10`) are read from the environment when the `app` process starts. All three are optional; leave them unset to keep the defaults. See "Rate-limit threshold tuning" under "Operational notes" for the procedure — it needs a restart, not a rebuild.
 
@@ -55,11 +81,13 @@ Three consequences worth stating explicitly:
 
 1. **Clone the repository** onto the target host and `cd` into it.
 
-2. **Copy the environment template**:
+2. **Copy the environment template, and lock its permissions**:
 
    ```bash
-   cp .env.example .env
+   cp .env.example .env && chmod 600 .env
    ```
+
+   **The `chmod` is not optional.** `cp` reproduces the template's mode `0644`, i.e. world-readable, and the file you are about to fill in holds `POSTGRES_PASSWORD`, `AUTH_SECRET`, `AZURE_CLIENT_SECRET`, `QBO_CLIENT_SECRET` and `TOKEN_ENCRYPTION_KEY` — every credential this deployment has, in plaintext, readable by any local account on the host. That is the same threat model under which `npm run bootstrap:admin` refuses to accept a password as an argument (because `ps` output is world-readable); a world-readable `.env` is the larger hole, and it persists rather than lasting for the life of a process. Confirm with `ls -l .env` — you want `-rw-------`.
 
 3. **Fill in every variable in `.env`**, group by group:
 
@@ -76,28 +104,46 @@ Three consequences worth stating explicitly:
    - `DB_PORT` — the host port Postgres is published on, **bound to `127.0.0.1`**. Default `5432` is fine for a single production instance. Change it if you are running multiple instances of this stack (e.g. staging alongside production, or several git worktrees) on the same host — see "Operational notes" below.
    - `DATABASE_URL` — the **host-side** connection string, used by tooling run outside Docker (`npm run db:migrate:deploy`, `npm run db:seed`, `npm run bootstrap:admin`, the E2E suite). It must match `POSTGRES_PASSWORD` and `DB_PORT`. The `app` and `email-poller` containers do **not** read it — Compose builds their own `DATABASE_URL` pointing at `db:5432` on the internal network.
 
-     `.env.example` writes this as `postgresql://postgres:${POSTGRES_PASSWORD}@localhost:${DB_PORT}/msp_psa?schema=public`. **Docker Compose expands that; plain dotenv does not.** `prisma7.config.ts` loads `.env` via `import "dotenv/config"`, which hands Prisma the literal string `${POSTGRES_PASSWORD}` and fails with a connection error. Either source `.env` into your shell before running host-side scripts (`set -a; . ./.env; set +a`, as every host-side command in this document does) or paste the literal password into the line instead of the `${...}` reference.
+     `.env.example` writes this as `postgresql://postgres:${POSTGRES_PASSWORD}@localhost:${DB_PORT}/msp_psa?schema=public`. **Docker Compose expands that; plain dotenv does not, and neither does the E2E suite's own `.env` reader.** `prisma7.config.ts` loads `.env` via `import "dotenv/config"`, which hands Prisma the literal string `${POSTGRES_PASSWORD}`; `e2e/db.ts`'s `envValue()` hand-parses the file and strips quotes with no `${...}` expansion at all, so it does the same. Both fail with a connection error that names nothing useful.
+
+     So: **source `.env` into your shell before running any host-side script that touches the database.** Every such command block in this document — the migration, the seed, `bootstrap:admin`, `--reset-password` and the E2E suite — begins with the same prelude:
+
+     ```bash
+     set -a; . ./.env; set +a
+     ```
+
+     (`npm install`, `npx prisma generate` and `npx playwright install` do not touch the database and do not need it.) The alternative is to paste the literal password into the `DATABASE_URL` line instead of the `${...}` reference — then nothing needs expanding, but the password exists in a second place to keep in sync.
 
    **Public site address and TLS**
    - `SITE_ADDRESS` — **required, no default.** The public hostname Caddy serves and obtains a certificate for, e.g. `psa.yourmsp.com`. Hostname only: no scheme, no path, no port. Public DNS for this name must already resolve to this host, and inbound :80 must be reachable, before the first request can get a certificate.
-   - `HTTP_PORT` / `HTTPS_PORT` — optional, defaulting to `80`/`443`. Only change them to run a second stack side by side on the same host; HTTP-01 issuance needs the real public :80.
+   - `HTTP_PORT` / `HTTPS_PORT` — optional, defaulting to `80`/`443`. Only change them to run a second stack side by side on the same host. A stack on non-standard ports cannot answer either ACME challenge (HTTP-01 needs the real public :80, TLS-ALPN-01 the real public :443) and so cannot obtain a publicly-trusted certificate.
 
    **Auth**
    - `AUTH_SECRET` — generate with `npx auth secret` or `openssl rand -base64 32`. Required; do not leave blank.
-   - `AUTH_URL` — **required, no default.** The public `https://` URL this deployment is reachable at, matching `SITE_ADDRESS` (e.g. `https://psa.yourmsp.com`). Compose fails fast if it is unset. It must be `https://`: Auth.js decides whether to use the `__Secure-` cookie prefix from this URL's protocol alone, so an `http://` value behind TLS silently issues a non-Secure session cookie with no error anywhere. That is the single condition the onboarding guidance below depends on.
+   - `AUTH_URL` — **required, no default, and shipped blank.** The public `https://` URL this deployment is reachable at, matching `SITE_ADDRESS` (e.g. `https://psa.yourmsp.com`), with no trailing slash. Compose fails fast if it is unset. It must be `https://`: Auth.js decides whether to use the `__Secure-` cookie prefix from this URL's protocol alone, so an `http://` value behind TLS silently issues a non-Secure session cookie with no error anywhere. That is the single condition the onboarding guidance below depends on.
+
+     **Two things the `${AUTH_URL:?}` guard does not do for you.** It checks *presence*, not shape — `http://...`, a wrong hostname, or a trailing slash all pass it silently. And it only helps if the value is actually absent, which is why `.env.example` ships this blank alongside `POSTGRES_PASSWORD`, `SITE_ADDRESS` and `AUTH_SECRET`: an example value left in place by an operator who skimmed the file would satisfy the guard and start the stack on somebody else's hostname. Verify the result rather than the input — see the cookie-name check under "Creating the first admin account".
    - `AUTH_TRUST_HOST` — leave `true` unless you have a specific reason to change it; required for Auth.js to trust the host header behind a reverse proxy, which this deployment now always has.
 
    **Rate limiting** — all optional; leave unset to keep the defaults:
    - `RATE_LIMIT_WINDOW_MS` (default `60000`), `RATE_LIMIT_GENERAL` (default `60`), `RATE_LIMIT_AUTH` (default `10`). Read by `src/proxy.ts` when the `app` process starts. A value that is not a positive integer — including `0` — is rejected with a warning in `docker compose logs app` and the default is used instead: a typo cannot disable rate limiting.
 
-   **Microsoft Graph API (email-to-ticket poller)** — required only if the `email-poller` service will be used:
+   **Microsoft Graph API (email-to-ticket poller)** — required only if the `email-poller` service will be used, and **all four together or none**:
    - `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` — from an Azure AD app registration with `Mail.Read` (or `Mail.ReadWrite`) **application** permission, with admin consent granted.
    - `MAILBOX_ADDRESS` — the shared mailbox the poller reads from.
+
+     `scripts/email-poller.ts` calls `requireEnv()` on each of the four at module load and throws if any is missing *or empty*, so a partially filled block is the same as an empty one. The service is behind Compose profile `email` and does not start unless you ask for it — see "Build and start" below.
 
    **QuickBooks Online integration** — required only if QBO push will be used:
    - `QBO_CLIENT_ID`, `QBO_CLIENT_SECRET` — from an Intuit developer app registration.
    - `QBO_ENVIRONMENT` — `sandbox` or `production`.
-   - `QBO_REDIRECT_URI` — must exactly match the redirect URI registered in the Intuit developer app, and must now be `https://` (e.g. `https://psa.yourmsp.com/api/qbo/callback`).
+   - `QBO_REDIRECT_URI` — **shipped blank.** Must exactly match the redirect URI registered in the Intuit developer app, and must be `https://` (e.g. `https://psa.yourmsp.com/api/qbo/callback`). Only the host varies; the path is fixed by the callback route. It ships blank for the same reason `AUTH_URL` does — `src/lib/qbo.ts` uses this value verbatim, and an unedited example host fails at Intuit, on Intuit's page, with an error nothing here can explain.
+
+     All five of these (the four above plus `TOKEN_ENCRYPTION_KEY`) are read from `process.env` inside the running `app` container, and `.dockerignore` excludes `.env` from the build context — so they reach the app **only** because `docker-compose.yml` names them in `app.environment`. If you add a new QBO-related variable later, adding it to `.env` alone does nothing; it must be named in `docker-compose.yml` too. Confirm what the container will actually receive with:
+
+     ```bash
+     docker compose config | sed -n '/^  app:/,/^  [a-z]/p'
+     ```
 
      **Setting it here is only half the job.** The same `https://` URI must ALSO be updated in the Intuit developer app registration at <https://developer.intuit.com>. Nothing in this repository can do that for you, and nothing here can detect that it was missed: Intuit rejects any callback whose URI does not match the registered one, with an opaque error on Intuit's own page. If you are upgrading an existing deployment whose registered URI is `http://`, change it at Intuit **before** anyone tries to connect QuickBooks.
 
@@ -121,22 +167,36 @@ docker compose build
 docker compose up -d
 ```
 
-Confirm all four services are running:
+Confirm the services are running:
 
 ```bash
 docker compose ps
 ```
 
-You should see four services: `caddy` (the TLS-terminating reverse proxy, ports `${HTTP_PORT:-80}` and `${HTTPS_PORT:-443}`), `app` (the Next.js web application, **no published port** — reachable only as `app:3000` on the internal network), `email-poller` (the background Microsoft Graph polling process, no published port), and `db` (Postgres 16, `127.0.0.1:${DB_PORT:-5432}`). Check logs for any of them with `docker compose logs -f <service>` if a service does not come up healthy.
+You should see **three** services: `caddy` (the TLS-terminating reverse proxy, ports `${HTTP_PORT:-80}` and `${HTTPS_PORT:-443}`), `app` (the Next.js web application, **no published port** — reachable only as `app:3000` on the internal network), and `db` (Postgres 16, `127.0.0.1:${DB_PORT:-5432}`). Check logs for any of them with `docker compose logs -f <service>` if a service does not come up healthy.
+
+### The fourth service, `email-poller`, is opt-in
+
+`email-poller` is behind Compose **profile `email`** and is deliberately not part of a default `up`. `scripts/email-poller.ts` calls `requireEnv()` for `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` and `MAILBOX_ADDRESS` at module load, so on any deployment that does not use email-to-ticket it would start, throw, and sit in `Exited(1)` — and with no `restart:` policy anywhere in this stack it stays there, showing a permanently failed service in `docker compose ps` forever. A profile is preferable to teaching operators to ignore a red line.
+
+If you *are* using email-to-ticket: fill in all four Azure values in `.env`, then start the stack with the profile flag:
+
+```bash
+docker compose --profile email up -d
+```
+
+> **The flag is required on every command that should include the poller** — `up`, `ps`, `logs`, `down`, `build`. Without it Compose does not consider the service part of the project at all: `docker compose ps` will not list it (and will not warn you), `docker compose logs email-poller` errors with "no such service", and a plain `docker compose down` leaves a running poller behind. Set `COMPOSE_PROFILES=email` in your shell (or in `.env`) if you would rather not repeat it. If you filled in the Azure block and the poller is simply not there, this flag is the reason.
 
 If `docker compose up -d` refuses to start with `required variable ... is missing`, that is deliberate: `POSTGRES_PASSWORD`, `SITE_ADDRESS` and `AUTH_URL` have no defaults, because every default this project could have picked for them is a security downgrade.
 
 ### TLS: what happens on the first request
 
-Caddy does **not** obtain a certificate at startup. It obtains one via the ACME HTTP-01 challenge on the first request for `SITE_ADDRESS`, which means both of these must already be true:
+Caddy does **not** obtain a certificate at startup. It obtains one via ACME on the first request for `SITE_ADDRESS`. The shipped `Caddyfile` sets no `tls` and no `acme` directive, so Caddy keeps **both** of its default challenges enabled — **HTTP-01 on :80** and **TLS-ALPN-01 on :443** — and uses whichever succeeds. What must already be true:
 
 1. Public DNS for `SITE_ADDRESS` resolves to this host, and
-2. inbound TCP :80 is reachable from the public internet — HTTP-01 is answered on port 80.
+2. inbound TCP :80 is reachable from the public internet. This is the recommended configuration, not a hard requirement for issuance: TLS-ALPN-01 on :443 can complete on its own. But :80 is where the `http://` → `https://` redirect lives, and it is the fallback challenge if TLS-ALPN-01 fails — closing it removes both.
+
+> **No publicly-trusted certificate was ever issued against this configuration.** Everything verified during Phase 8 used Caddy's **internal CA** answering for `localhost`, which does not exercise ACME, DNS, or either challenge. The steps below are the right steps; treat the outcome as unobserved and actually read the log.
 
 Make that first request yourself and watch it happen:
 
@@ -147,7 +207,7 @@ docker compose logs -f caddy        # watch issuance; look for "certificate obta
 
 If issuance fails, Caddy keeps retrying in the background and the site serves no TLS in the meantime. The usual causes are DNS not yet propagated, :80 blocked at a firewall or router, or something else on the host already bound to :80. Note that certificates and the ACME account key live in the `caddy_data` volume — deleting it forces re-issuance, which can hit Let's Encrypt's rate limits, so do not prune it casually.
 
-No `restart:` policy is set on any service in `docker-compose.yml`. A container that exits stays down, and nothing comes back after a host reboot until someone runs `docker compose up -d`. If this deployment is meant to survive reboots unattended, add `restart: unless-stopped` to each service (or manage the stack with a systemd unit) — that is a deliberate operator decision, not something this repository assumes for you.
+No `restart:` policy is set on any service in `docker-compose.yml`, so a container that exits stays down and nothing returns after a host reboot on its own — see "Stopping, restarting and backing up" below.
 
 ---
 
@@ -178,7 +238,16 @@ prisma migrate deploy && bash scripts/post-migrate.sh
 ```
 
 1. `prisma migrate deploy` applies every migration under `prisma/migrations/` in order, including this phase's `20260901190000_add_defense_in_depth_indexes` migration (adds `@@index([companyId])` to `Contact`/`Contract`/`Asset` and a unique index on `Invoice.qboInvoiceId`).
-2. `scripts/post-migrate.sh` then idempotently (`CREATE UNIQUE INDEX IF NOT EXISTS`) re-applies the one-active-timer-per-user partial index on `TimeEntry`, which Prisma's schema DSL cannot express directly and which `prisma migrate deploy` alone does not guarantee on a fresh environment (see the script's own header comment for the full history). It is safe to run repeatedly.
+2. `scripts/post-migrate.sh` then idempotently (`CREATE UNIQUE INDEX IF NOT EXISTS`) re-applies the one-active-timer-per-user partial index on `TimeEntry`, which Prisma's schema DSL cannot express directly and which `prisma migrate deploy` alone does not guarantee on a fresh environment (see the script's own header comment for the full history). It is safe to run repeatedly. **It needs `psql` on the host** (see Prerequisites) — it shells out to it, and without it step 1 still succeeds while step 2 dies at `psql: command not found`.
+
+**Confirm both halves landed.** Step 1 announces itself in Prisma's output; step 2 prints `post-migrate.sh: TimeEntry_one_active_timer_per_user partial unique index verified/created.` on success. If you did not see that line — or want to check an existing deployment — query the index directly:
+
+```bash
+docker compose exec -T db psql -U postgres -d msp_psa \
+  -c "\di+ TimeEntry_one_active_timer_per_user"
+```
+
+One row means the constraint is in place. **No rows means it is missing**, and nothing in the application will tell you: the index is what stops a user holding two running timers at once, so its absence shows up later as duplicate open time entries rather than as an error. Install `postgresql-client` and re-run `npm run db:migrate:deploy` — it is idempotent.
 
 > **Warning — on an upgrade, this must complete before the `app` container restarts.** Application code that runs ahead of its schema does not fail partially here: `authorize()` selects every column, an absent column raises Prisma **P2022** on every request, and the login form reports "Invalid email or password" to everyone including every admin. See "Order matters: apply the migration *before* the app restarts" in the next section for the full explanation and the safe upgrade order.
 
@@ -295,7 +364,7 @@ Details that matter:
 - **`DATABASE_URL` must be exported into your shell.** Unlike `prisma db seed`, a plain `tsx` script on this project loads no `.env` file; the script checks the variable up front and tells you so by name instead of failing inside the Postgres driver with an undefined-connection-string error.
 - **An existing email is refused, not overwritten** — non-zero exit, nothing written, and a pointer to the `--reset-password` path below.
 
-The demo-account seed is **no longer the documented way to create a real admin.** `prisma/seed.ts` and its `ALLOW_SEED_IN_PRODUCTION` override still exist and the guard rail is still correct, but it is now a local-development tool only — see "First-run verification" below.
+The demo-account seed is **no longer the documented way to create a real admin.** `prisma/seed.ts` still exists, but its guard rail has been **replaced** — the old `ALLOW_SEED_IN_PRODUCTION` override is no longer consulted at all, and the guard it gated on was never effective here (see below), but it is now a local-development tool only — see "First-run verification" below.
 
 ### Onboard the rest of the team
 
@@ -332,7 +401,25 @@ The operational consequence is that **a deactivated person is never told they we
 
 ## First-run verification
 
-**Do not rely on the seeded demo users for a real deployment.** `prisma/seed.ts` creates five test accounts (`technician@mspdemo.local`, `dispatcher@mspdemo.local`, `sales@mspdemo.local`, `finance@mspdemo.local`, `admin@mspdemo.local`), all sharing a single well-known password (`Password123!`). It exists for local development and for the E2E suite's login fixture. The seed script refuses to run when `NODE_ENV=production` unless `ALLOW_SEED_IN_PRODUCTION=true` is explicitly set, precisely to prevent these well-known credentials from ever existing in a real deployment's database — **do not set that override on a production database.** Creating the real admin is `npm run bootstrap:admin`'s job, as described above; the previous guidance in this document (a modified seed run, or a hand-written `psql` insert) is obsolete and should not be followed.
+**Do not rely on the seeded demo users for a real deployment.** `prisma/seed.ts` creates five test accounts (`technician@mspdemo.local`, `dispatcher@mspdemo.local`, `sales@mspdemo.local`, `finance@mspdemo.local`, `admin@mspdemo.local`), all sharing a single well-known password (`Password123!`). It exists for local development and for the E2E suite's login fixture. **The seed script now refuses by default, everywhere.** It runs only with an explicit
+`ALLOW_DEMO_SEED=true` on the command line:
+
+```bash
+ALLOW_DEMO_SEED=true npm run db:seed
+```
+
+Set it **inline, for one command. Never put it in `.env`** — this document tells you to run
+`set -a; . ./.env; set +a` before host-side commands, which would export it on the deployment
+host and re-arm the script there, exactly the failure the gate prevents.
+
+> **Why an explicit opt-in rather than an automatic check.** The previous guard fired only when
+> `NODE_ENV=production`. That variable is set inside the app container (`Dockerfile`), and is
+> **unset in your shell** — so it could never fire for a host-side `npm run db:seed`, which is
+> how this script is actually run. A "refuse unless `DATABASE_URL` is localhost" check cannot
+> replace it either: Postgres is published on `127.0.0.1`, so the production database is *also*
+> reachable at localhost. Nothing the script can observe distinguishes your development database
+> from this one. You can. `ALLOW_SEED_IN_PRODUCTION` is no longer read; delete it from any `.env`
+> where it survives. Creating the real admin is `npm run bootstrap:admin`'s job, as described above; the previous guidance in this document (a modified seed run, or a hand-written `psql` insert) is obsolete and should not be followed.
 
 Once the real admin account exists (see the previous section):
 
@@ -352,17 +439,21 @@ One-time browser binary install (only needs to be run once per host/environment 
 npx playwright install --with-deps chromium
 ```
 
-Then run the suite:
+Then seed the fixture accounts the suite requires and run it. **Both need `.env` sourced into your shell first** — the same prelude the migration uses, and for a slightly different reason worth knowing:
 
 ```bash
+set -a; . ./.env; set +a
+ALLOW_DEMO_SEED=true npm run db:seed
 npm run test:e2e
 ```
+
+`e2e/db.ts` does not use dotenv at all. Its `envValue()` reads `.env` by hand, takes everything after the first `=`, trims it and strips surrounding quotes — and performs **no `${...}` expansion**. Since `.env.example` ships `DATABASE_URL="postgresql://postgres:${POSTGRES_PASSWORD}@..."`, an operator who copied the template and skipped the prelude hands Prisma the literal placeholder. `envValue()` prefers `process.env` when it is set, so exporting first is what makes it read the real value. `npm run db:seed` goes through `prisma7.config.ts` and dotenv, which has the same non-expansion behaviour.
 
 `npm run test:e2e` runs the **gate** projects (`lifecycle` + `last-active-admin`). Per `playwright.config.ts` it starts its own `next dev` on port **3100** (override with `E2E_PORT`) — it will not reuse a server already listening, and a build-identity check in `e2e/global-setup.ts` aborts the run if the server answering is not built from the current source. That check exists because an earlier configuration silently graded a stale container image.
 
 > **This suite is for a local development database only. Do not point it at staging or production.**
 >
-> `e2e/global-setup.ts` and `e2e/global-teardown.ts` **delete** rows matching `e2e-lifecycle-%@e2e.invalid`, and require the five `*@mspdemo.local` seed accounts to exist — a database bootstrapped with `npm run bootstrap:admin` has none of them, so teardown will fail with a message about fixture accounts that names the wrong cause. Run this against a database seeded by `npm run db:seed`, on a machine you are developing on.
+> `e2e/global-setup.ts` and `e2e/global-teardown.ts` **delete** rows matching `e2e-lifecycle-%@e2e.invalid`, and require the five `*@mspdemo.local` seed accounts to exist — a database bootstrapped with `npm run bootstrap:admin` has none of them, so teardown will fail with a message about fixture accounts that names the wrong cause. Run this against a database seeded by `ALLOW_DEMO_SEED=true npm run db:seed`, on a machine you are developing on.
 >
 > For a pre-promotion check against staging, exercise the flows by hand using the onboarding steps above rather than running this suite.
 
@@ -374,9 +465,65 @@ Known gaps, intentional and documented in the specs themselves:
 
 ---
 
+## Stopping, restarting and backing up
+
+### Stopping
+
+```bash
+docker compose stop          # stop containers, keep them and all volumes
+docker compose start         # bring them back
+docker compose restart app   # restart one service in place
+docker compose down          # stop AND REMOVE containers + the network; volumes SURVIVE
+```
+
+`docker compose down` is safe: `pgdata`, `caddy_data` and `caddy_config` are named volumes and are **not** removed. `docker compose up -d` afterwards brings everything back with its data intact.
+
+> ### `docker compose down -v` destroys this deployment's data
+>
+> The `-v` flag removes the named volumes too. That is **two keystrokes** from the safe form above, and it deletes:
+>
+> - **`pgdata`** — every ticket, client, contract, invoice, time entry and user account. There is no undo and this repository ships no automated backup that would cover you.
+> - **`caddy_data`** — the issued TLS certificate **and the ACME account key**. Re-issuance then happens from scratch on the next request, which counts against [Let's Encrypt's rate limits](https://letsencrypt.org/docs/rate-limits/) (notably 5 duplicate certificates per week). Repeatedly recreating a stack can lock you out of issuance for days, with the site serving no TLS meanwhile.
+>
+> If your goal is "restart cleanly", `docker compose down && docker compose up -d` already does that. Reach for `-v` only to deliberately destroy a deployment that has never held real data. The same applies to `docker volume prune` and `docker system prune --volumes`.
+
+If you are running the email poller, add the profile flag so it is included: `docker compose --profile email down`. Without it, a running `email-poller` is left behind.
+
+### Backup
+
+**This repository ships no automated backup.** There is no cron job, no backup service in `docker-compose.yml`, and no retention policy anywhere in this project. Standing one up is the operator's responsibility, and until it exists this deployment has no recovery path from a `down -v`, a disk failure or a bad migration.
+
+A manual logical dump, run on the host, needs no host-side `DATABASE_URL` because `pg_dump` runs inside the `db` container:
+
+```bash
+docker compose exec -T db pg_dump -U postgres -d msp_psa --clean --if-exists \
+  > "msp_psa-$(date +%Y%m%d-%H%M%S).sql"
+```
+
+Restore into a running stack (this **overwrites** the current contents of `msp_psa`):
+
+```bash
+docker compose exec -T db psql -U postgres -d msp_psa -v ON_ERROR_STOP=1 \
+  < msp_psa-YYYYMMDD-HHMMSS.sql
+```
+
+Three things the database dump does **not** cover:
+
+1. **`.env`** — `POSTGRES_PASSWORD`, `AUTH_SECRET` and every integration secret. Back it up separately, encrypted, mode `0600` at rest, and never into the same bucket as the dump.
+2. **`TOKEN_ENCRYPTION_KEY` specifically.** QuickBooks access/refresh tokens are stored encrypted in the database, so a dump restored **without** the matching key leaves those rows undecryptable and the QBO connection must be re-established at `/admin/quickbooks`. The database being intact is not sufficient.
+3. **`caddy_data`.** Not worth backing up — Caddy re-issues — but see the rate-limit warning above before destroying it casually.
+
+**An untested backup is not a backup.** Restore one into a scratch stack (a separate `DB_PORT`, a separate project name via `-p`) and log in against it before you rely on this procedure. Nobody in this phase has done so — the commands above are correct by construction, not by observation.
+
+### After a host reboot
+
+No `restart:` policy is set on any service. Nothing comes back on its own: run `docker compose up -d` (plus `--profile email` if used). If this deployment must survive reboots unattended, add `restart: unless-stopped` to each service in `docker-compose.yml` or manage the stack with a systemd unit — a deliberate operator decision this repository does not make for you.
+
+---
+
 ## Operational notes
 
-- **`DB_PORT` per-environment convention**: still meaningful. The `db` service publishes `127.0.0.1:${DB_PORT:-5432}:5432` — loopback-scoped rather than removed, so Postgres is reachable from this host (which `db:migrate:deploy`, `db:seed`, `bootstrap:admin` and the E2E suite all need) and from nowhere else on the network. `.env.example` documents `DB_PORT` as a value to vary per checkout/worktree so multiple instances of this stack (e.g. a staging environment alongside production on the same host) don't collide on the same host Postgres port; that convention keeps working unchanged. For a single production deployment the default `5432` is fine. If you stand up a second instance, give it a distinct `DB_PORT` (e.g. `5433`) and a distinct `DATABASE_URL` to match — and distinct `HTTP_PORT`/`HTTPS_PORT`, remembering that only the stack holding the real :80 can complete an HTTP-01 challenge.
+- **`DB_PORT` per-environment convention**: still meaningful. The `db` service publishes `127.0.0.1:${DB_PORT:-5432}:5432` — loopback-scoped rather than removed, so Postgres is reachable from this host (which `db:migrate:deploy`, `db:seed`, `bootstrap:admin` and the E2E suite all need) and from nowhere else on the network. `.env.example` documents `DB_PORT` as a value to vary per checkout/worktree so multiple instances of this stack (e.g. a staging environment alongside production on the same host) don't collide on the same host Postgres port; that convention keeps working unchanged. For a single production deployment the default `5432` is fine. If you stand up a second instance, give it a distinct `DB_PORT` (e.g. `5433`) and a distinct `DATABASE_URL` to match — and distinct `HTTP_PORT`/`HTTPS_PORT`, remembering that ACME needs the real public ports — only the stack holding :80 can answer HTTP-01, and only the stack holding :443 can answer TLS-ALPN-01, so a second stack on `8080`/`8443` gets no publicly-trusted certificate at all.
 
 - **Rate-limit threshold tuning**: the thresholds are read from the environment when the `app` process starts, so retuning them costs a restart — **not** a rebuild, and no source edit. The three variables and their defaults:
 

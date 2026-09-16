@@ -42,17 +42,44 @@ services:
       - RATE_LIMIT_WINDOW_MS
       - RATE_LIMIT_GENERAL
       - RATE_LIMIT_AUTH
+      # QuickBooks Online + token encryption. Same reason as the block above:
+      # .dockerignore excludes .env from the build context and Compose's .env is
+      # interpolation-only, so a key not named here simply does not exist inside
+      # the container no matter how carefully the operator filled in .env.
+      # src/lib/qbo.ts (:27,:28,:45), src/lib/actions/invoices.ts (:280) and
+      # src/lib/crypto.ts (:27) read all five straight off process.env, so
+      # omitting them makes every QuickBooks path fail at runtime.
+      #
+      # Bare keys, for the list-form reason above: QBO is optional, and the
+      # mapping form would inject "" for an operator who never configured it,
+      # turning "not connected" into a confusing empty-credential error.
+      - QBO_CLIENT_ID
+      - QBO_CLIENT_SECRET
+      - QBO_ENVIRONMENT
+      - QBO_REDIRECT_URI
+      - TOKEN_ENCRYPTION_KEY
     depends_on:
       - db
   email-poller:
     build: .
     command: ["npm", "run", "email-poller"]
+    # Opt-in. scripts/email-poller.ts calls requireEnv() for all four AZURE_*/
+    # MAILBOX_ADDRESS values at MODULE LOAD, so without them the container
+    # throws immediately and sits in Exited(1) forever -- with no restart policy
+    # it does not loop, it just shows up as a permanently failed service in
+    # `docker compose ps` on every deployment that does not use email-to-ticket.
+    # A profile keeps it out of the default `up` instead of normalising a red
+    # service. To run it, fill in the Azure block in .env and start the stack
+    # with `docker compose --profile email up -d` (the flag is required on
+    # EVERY compose command that should include it -- see DEPLOYMENT.md).
+    profiles: ["email"]
+    # List form, same reasoning as `app` above.
     environment:
-      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required - see .env.example}@db:5432/msp_psa?schema=public
-      AZURE_TENANT_ID: ${AZURE_TENANT_ID}
-      AZURE_CLIENT_ID: ${AZURE_CLIENT_ID}
-      AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET}
-      MAILBOX_ADDRESS: ${MAILBOX_ADDRESS}
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required - see .env.example}@db:5432/msp_psa?schema=public
+      - AZURE_TENANT_ID
+      - AZURE_CLIENT_ID
+      - AZURE_CLIENT_SECRET
+      - MAILBOX_ADDRESS
     depends_on:
       - db
   db:

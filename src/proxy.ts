@@ -65,9 +65,67 @@ const authMiddleware = NextAuth(authConfig).auth;
 // protection. This project's docker-compose.yml currently exposes `app`
 // directly with no such proxy, so treat this limiter as a no-op against a
 // deliberate attacker until one is added in front of it.
-const RATE_LIMIT_WINDOW_MS = 60_000;
-const GENERAL_RATE_LIMIT = 60; // requests per window per IP, all other matched routes
-const AUTH_RATE_LIMIT = 10; // requests per window per IP, /api/auth/* (credential-check surface)
+
+// OPERATOR-TUNABLE, READ FROM THE ENVIRONMENT AT PROCESS START.
+//
+// The three constants below are resolved ONCE, at module load -- i.e. when the
+// Node.js server process starts -- and never re-read per request. Retuning one
+// therefore costs a container restart, not a rebuild.
+//
+// This is only *genuinely* runtime-read because of the runtime move. Proxy runs
+// on the Node.js runtime, and that is not configurable
+// (node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/proxy.md:255;
+// .../01-app/02-guides/upgrading/version-16.md:616 -- "The `edge` runtime is
+// **NOT** supported in `proxy`"). Under the previous Edge middleware
+// convention the bundler inlined `process.env.X` at build time, so an
+// "env-configurable" limit would have been illusory: frozen at `next build`
+// and beyond the reach of whoever deploys it.
+//
+// An invalid value falls back; it never disables the control. envInt() accepts
+// positive integers only -- non-numeric, empty, zero, negative and fractional
+// input all keep the default below and log. `0` is rejected deliberately: this
+// is a security control, and a typo must not be able to mean "limit disabled"
+// (or, depending on comparison order, "nothing allowed"). Nothing here throws,
+// either: this module runs on every matched request, so a throw at module load
+// would be an app-wide outage caused by one mistyped variable.
+
+/**
+ * Reads a positive integer from `process.env`, falling back to `fallback` for
+ * anything it cannot accept. Module-private on purpose -- these are
+ * proxy-local tuning knobs, not a general configuration facility.
+ *
+ * The digits-only test runs BEFORE `Number.parseInt`, because `parseInt` is
+ * lenient in exactly the directions that hurt here: it reads "1.5" as 1 and
+ * "60abc" as 60, quietly applying a limit nobody wrote. A value that is not
+ * wholly digits is rejected rather than salvaged.
+ *
+ * Unset is silent (that is the documented default path). Anything else that is
+ * rejected warns once, at module scope, naming the variable, the offending
+ * value and the default applied -- an operator who set the variable and sees
+ * default behaviour must not be left guessing whether it took effect.
+ */
+function envInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+
+  const value = raw.trim();
+  const parsed = /^\d+$/.test(value) ? Number.parseInt(value, 10) : Number.NaN;
+
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    console.warn(
+      `[proxy] ${name}=${JSON.stringify(raw)} is not a positive integer; ` +
+        `falling back to ${fallback}. The rate limit stays at its default -- ` +
+        `it is NOT disabled.`,
+    );
+    return fallback;
+  }
+
+  return parsed;
+}
+
+const RATE_LIMIT_WINDOW_MS = envInt("RATE_LIMIT_WINDOW_MS", 60_000);
+const GENERAL_RATE_LIMIT = envInt("RATE_LIMIT_GENERAL", 60); // requests per window per IP, all other matched routes
+const AUTH_RATE_LIMIT = envInt("RATE_LIMIT_AUTH", 10); // requests per window per IP, /api/auth/* (credential-check surface)
 
 type RateLimitEntry = { count: number; windowStart: number };
 

@@ -119,9 +119,15 @@ described below), which is **not** listed in this plan's `files_modified`. Nothi
 `08-03-PLAN.md` or `08-CONTEXT.md` declares plan self-correction an allowed exception —
 `grep -rn -i 'exception' .planning/phases/08-deployment-hardening/08-03-PLAN.md
 .planning/phases/08-deployment-hardening/08-CONTEXT.md` returns nothing. The scope check
-allow-lists only `Caddyfile`, `docker-compose.yml`, `.env.example`, so **re-run against the
-tree as committed it prints `SCOPE VIOLATION` and exits 1**, making the honest tally for the
-committed tree **29 of 31**. The four paths it would flag:
+allow-lists only `Caddyfile`, `docker-compose.yml`, `.env.example`, so **had those paths
+been present as working-tree modifications when the check ran, it would have printed
+`SCOPE VIOLATION` and exited 1** — making the honest tally **29 of 31**.
+
+To be precise about what that is and is not: this is a *derivation from the commit*, not a
+re-run. The check reads `git status --porcelain`, i.e. the working tree, so re-running it
+now against the clean committed tree prints `scope ok` — for the vacuous reason set out two
+paragraphs down, not because the scope is clean. The substitute below enumerates the same
+four paths from the commit itself, which is the comparison the check was meant to make:
 
 ```
 $ git show --name-only --format= 84a5332 | grep -vE '^(Caddyfile|docker-compose\.yml|\.env\.example)$'

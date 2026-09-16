@@ -34,7 +34,18 @@ import { computeSlaDeadlines, getSlaStatus } from "../src/lib/sla";
 
 const POLL_INTERVAL_MS = 90_000; // 90s -- within the 1-2 minute range from 03-CONTEXT.md
 
-const WATERMARK_FILE = path.join(process.cwd(), ".email-poller-state.json");
+// Where the poll watermark lives. Defaults to the working directory, which is
+// what a developer running `npm run email-poller` wants. In a container the
+// working directory is the image's /app layer and does NOT survive
+// `docker compose down` / `build && up -d` / a host reboot -- and a lost
+// watermark is silent: getWatermark() falls back to new Date() and
+// deliberately does not backfill, so every mail that arrived while the poller
+// was down is never turned into a ticket and nothing reports the gap. The
+// compose service therefore points this at a named volume.
+const WATERMARK_FILE = path.join(
+  process.env.EMAIL_POLLER_STATE_DIR ?? process.cwd(),
+  ".email-poller-state.json",
+);
 
 /**
  * Fixed, greppable marker string prefixed to every SLA breach-flag comment.

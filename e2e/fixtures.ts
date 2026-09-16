@@ -16,9 +16,11 @@ import { test, type Browser, type BrowserContext, type Page } from "@playwright/
  * Seeded local-dev test-user credentials, one per role, from
  * `prisma/seed.ts` (cross-referenced against `.planning/STATE.md`, which
  * documents the same email pattern and shared password). These accounts
- * only exist in a local/dev database seeded via `npm run db:seed` -- the
- * seed script itself refuses to run with `NODE_ENV=production` unless
- * explicitly overridden. Never valid outside local dev.
+ * only exist in a local/dev database seeded via
+ * `ALLOW_DEMO_SEED=true npm run db:seed` -- the seed script refuses to run
+ * anywhere without that exact opt-in on the command line (the older
+ * NODE_ENV/ALLOW_SEED_IN_PRODUCTION gate is gone). Never valid outside local
+ * dev.
  */
 export const ROLE_CREDENTIALS: Record<
   "technician" | "dispatcher" | "sales" | "finance" | "admin",
@@ -200,7 +202,7 @@ export async function loginAs(
       `loginAs("${role}") expected to land on "/" after sign-in but landed on "${pathname}".` +
         (pathname === "/change-password"
           ? ` The seeded ${email} account has mustChangePassword set;` +
-            ` re-run \`npm run db:seed\` (prisma/seed.ts sets isActive/mustChangePassword explicitly).`
+            ` re-run \`ALLOW_DEMO_SEED=true npm run db:seed\` (prisma/seed.ts sets isActive/mustChangePassword explicitly).`
           : ""),
     );
   }

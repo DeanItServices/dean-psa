@@ -141,7 +141,13 @@ against the actual config.
 |------|-------------------|
 | **`header_up X-Real-IP {remote_host}`** | One-line defense-in-depth in `Caddyfile`; 08-03 owns that file |
 | **Cookie-name check never observed** | Needs a real deployment with public DNS. **Still unexecuted as of review cycle 2** — no execution has been added, so the `AUTH_URL`/`__Secure-` cookie-prefix failure mode in the spec remains asserted, not observed. |
-| **`08-02-PLAN.md` has no scope check** | It is the only Phase 8 plan whose `<verification>` block contains no `git status --porcelain` scope assertion (the block runs `tsc`, `lint` and five greps — reproduce with `sed -n '/<verification>/,/<\/verification>/p' `.planning/phases/08-deployment-hardening/08-02-PLAN.md`). `08-02-SUMMARY.md:28` nonetheless reports `scope: only src/proxy.ts`. That statement is **true** — `git show --stat 6185bd4` confirms the source diff is `src/proxy.ts` alone — but it was not produced by any listed command, so it is an unverified-by-construction line in an otherwise command-backed summary. Recorded, not fixed: 08-02's plan and summary are outside this cycle's remit. |
+| **`08-02-PLAN.md` has no scope check** | **Corrected — this finding was wrong.** It is true that 08-02's plan-level `<verification>` block contains no scope assertion (it runs `tsc`, `lint` and five greps). It is **not** true that no listed command produced the scope line: `08-02-PLAN.md:229` is exactly that command, inside the final `<task>`'s `<verify>` block —
+
+```
+git status --porcelain | awk '{print $2}' | grep -qvE '^(src/proxy\.ts)$' && { echo "SCOPE VIOLATION"; exit 1; } || echo "scope ok"
+```
+
+— so `08-02-SUMMARY.md:28`'s `scope: only src/proxy.ts` is command-backed after all, and independently corroborated by `git show --stat 6185bd4`. The original finding searched only the plan-level block and missed the task-level one. What survives is a much smaller note: scope assertions live in different places across the Phase 8 plans, and the `git status --porcelain` form passes vacuously on a clean tree (see `08-03-SUMMARY.md`), so the line is weaker evidence than it looks — but it is not unverified. |
 | `src/lib/session.ts:166` "never from Edge middleware" | Wrong since 08-01; `src/lib/**` forbidden to every Phase 8 plan |
 | `e2e/fixtures.ts:42,46` reference deleted `src/middleware.ts` | `e2e/**` forbidden phase-wide |
 | `caddy:alpine` floating tag | Verified twice against v2.11.4; pinning a digest is a follow-up |

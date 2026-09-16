@@ -136,6 +136,47 @@ function envInt(name: string, fallback: number): number {
   return parsed;
 }
 
+// AUTH_URL shape check, run once at process start.
+//
+// docker-compose.yml guards AUTH_URL with `${AUTH_URL:?}`, but Compose can only
+// check PRESENCE -- `http://psa.example.com` satisfies it. Auth.js then decides
+// the `__Secure-` cookie prefix from `url.protocol === "https:"` alone
+// (@auth/core init.js; see the COOKIE NAME note in src/lib/session.ts), so an
+// http:// value behind a TLS-terminating proxy silently issues a session cookie
+// with no Secure attribute and nothing anywhere reports it. This is the one
+// production misconfiguration in this file's blast radius that produces no
+// error at all, so say it loudly on stderr where `docker compose logs app`
+// shows it. Warn rather than throw: http:// is correct in local development,
+// and refusing to boot the whole app over a cookie attribute would be a worse
+// failure than the one being prevented.
+function warnOnInsecureAuthUrl(): void {
+  if (process.env.NODE_ENV !== "production") return;
+  const raw = process.env.AUTH_URL;
+  if (raw === undefined || raw.trim() === "") return; // compose's :? guard owns this case
+  let protocol: string;
+  try {
+    protocol = new URL(raw.trim()).protocol;
+  } catch {
+    console.warn(
+      `[proxy] AUTH_URL=${JSON.stringify(raw)} is not a parseable URL. ` +
+        "Auth.js derives the __Secure- session-cookie prefix from its protocol, " +
+        "so this deployment may issue a non-Secure session cookie.",
+    );
+    return;
+  }
+  if (protocol !== "https:") {
+    console.warn(
+      `[proxy] AUTH_URL=${JSON.stringify(raw)} is not https://. In production this ` +
+        "makes Auth.js issue a session cookie WITHOUT the __Secure- prefix and without " +
+        "the Secure attribute, so it travels over plain HTTP. Set AUTH_URL to the public " +
+        "https:// URL and restart. Verify by checking the cookie name in devtools after " +
+        "logging in: it must be __Secure-authjs.session-token.",
+    );
+  }
+}
+
+warnOnInsecureAuthUrl();
+
 const RATE_LIMIT_WINDOW_MS = envInt("RATE_LIMIT_WINDOW_MS", 60_000);
 const GENERAL_RATE_LIMIT = envInt("RATE_LIMIT_GENERAL", 60); // requests per window per IP, all other matched routes
 const AUTH_RATE_LIMIT = envInt("RATE_LIMIT_AUTH", 10); // requests per window per IP, /api/auth/* (credential-check surface)

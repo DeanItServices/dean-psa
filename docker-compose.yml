@@ -17,6 +17,18 @@ services:
       - caddy_config:/config
     depends_on:
       - app
+    # Docker's default json-file driver has NO size limit, and Caddy's `log`
+    # directive (Caddyfile) writes one line per request BEFORE any
+    # authentication -- so an unauthenticated client can grow this file as fast
+    # as it can send requests. It shares a filesystem with the pgdata volume,
+    # which makes an unbounded access log a path to a full disk and a Postgres
+    # that cannot write. Cap it. `docker compose logs caddy` still works; it
+    # just keeps 50 MB of history instead of all of it.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
   app:
     build: .
     # No ports: the app is reachable only on the internal Compose network, at
@@ -29,7 +41,21 @@ services:
     # would log warnings at start. Compose resolves bare keys from .env.
     environment:
       - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required - see .env.example}@db:5432/msp_psa?schema=public
-      - AUTH_SECRET=${AUTH_SECRET}
+      # :? like the other three credentials in this tier. Without it an
+      # unedited .env starts the stack with AUTH_SECRET="" and the failure
+      # surfaces at the first login attempt -- i.e. after go-live -- instead of
+      # at `up`.
+      - AUTH_SECRET=${AUTH_SECRET:?AUTH_SECRET is required - generate with npx auth secret}
+      # Secret-rotation slots. src/lib/session.ts:53-55 reads all three off
+      # process.env and puts them AHEAD of AUTH_SECRET so tokens minted under a
+      # retired secret still decode. Bare keys (list form) because they are
+      # normally unset. Omitting them here is the same failure the QBO block
+      # below describes: the reads return undefined inside the container no
+      # matter what .env says, and a rotation logs every user out instead of
+      # rolling over cleanly.
+      - AUTH_SECRET_1
+      - AUTH_SECRET_2
+      - AUTH_SECRET_3
       # No :- default. An unset AUTH_URL behind TLS silently yields a non-Secure
       # session cookie: Auth.js picks the __Secure- prefix from url.protocol
       # alone (src/lib/session.ts), with no error to notice.
@@ -58,6 +84,12 @@ services:
       - QBO_ENVIRONMENT
       - QBO_REDIRECT_URI
       - TOKEN_ENCRYPTION_KEY
+    # Same unbounded-json-file reason as caddy above.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     depends_on:
       - db
   email-poller:
@@ -80,6 +112,14 @@ services:
       - AZURE_CLIENT_ID
       - AZURE_CLIENT_SECRET
       - MAILBOX_ADDRESS
+      # Poll watermark lives on a named volume, not in the image layer. See the
+      # comment on WATERMARK_FILE in scripts/email-poller.ts: without this the
+      # watermark is lost on every `down`, every rebuild and every host reboot,
+      # and the poller silently resumes from now() -- dropping every mail that
+      # arrived in the gap, with no error and no report.
+      - EMAIL_POLLER_STATE_DIR=/state
+    volumes:
+      - poller_state:/state
     depends_on:
       - db
   db:
@@ -102,3 +142,4 @@ volumes:
   pgdata:
   caddy_data:
   caddy_config:
+  poller_state:

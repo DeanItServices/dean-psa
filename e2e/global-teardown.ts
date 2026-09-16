@@ -174,7 +174,8 @@ export default async function globalTeardown(): Promise<void> {
         "time-entry-to-invoice.spec.ts all sign in as them, concurrently with this",
         "suite. Whatever mutated one of them has invalidated this whole run, and the",
         "resulting failures would otherwise surface in a spec with nothing to do with",
-        "the cause. Re-run `npm run db:seed` before trusting another run.",
+        "the cause. Re-run `ALLOW_DEMO_SEED=true npm run db:seed` before trusting another",
+        "run (the seed refuses without that opt-in).",
       ].join("\n"),
     );
   }

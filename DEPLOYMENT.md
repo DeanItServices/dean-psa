@@ -102,7 +102,7 @@ Three consequences worth stating explicitly:
 
      **This applies at initdb only.** On a host where the `pgdata` volume already exists, changing this value in `.env` does nothing to the database and the app simply stops connecting — see "Rotating the database password" below for the procedure that actually works.
    - `DB_PORT` — the host port Postgres is published on, **bound to `127.0.0.1`**. Default `5432` is fine for a single production instance. Change it if you are running multiple instances of this stack (e.g. staging alongside production, or several git worktrees) on the same host — see "Operational notes" below.
-   - `DATABASE_URL` — the **host-side** connection string, used by tooling run outside Docker (`npm run db:migrate:deploy`, `npm run db:seed`, `npm run bootstrap:admin`, the E2E suite). It must match `POSTGRES_PASSWORD` and `DB_PORT`. The `app` and `email-poller` containers do **not** read it — Compose builds their own `DATABASE_URL` pointing at `db:5432` on the internal network.
+   - `DATABASE_URL` — the **host-side** connection string, used by tooling run outside Docker (`npm run db:migrate:deploy`, `npm run db:seed` (development only — refuses without `ALLOW_DEMO_SEED=true`), `npm run bootstrap:admin`, the E2E suite). It must match `POSTGRES_PASSWORD` and `DB_PORT`. The `app` and `email-poller` containers do **not** read it — Compose builds their own `DATABASE_URL` pointing at `db:5432` on the internal network.
 
      `.env.example` writes this as `postgresql://postgres:${POSTGRES_PASSWORD}@localhost:${DB_PORT}/msp_psa?schema=public`. **Docker Compose expands that; plain dotenv does not, and neither does the E2E suite's own `.env` reader.** `prisma7.config.ts` loads `.env` via `import "dotenv/config"`, which hands Prisma the literal string `${POSTGRES_PASSWORD}`; `e2e/db.ts`'s `envValue()` hand-parses the file and strips quotes with no `${...}` expansion at all, so it does the same. Both fail with a connection error that names nothing useful.
 
@@ -116,10 +116,10 @@ Three consequences worth stating explicitly:
 
    **Public site address and TLS**
    - `SITE_ADDRESS` — **required, no default.** The public hostname Caddy serves and obtains a certificate for, e.g. `psa.yourmsp.com`. Hostname only: no scheme, no path, no port. Public DNS for this name must already resolve to this host, and inbound :80 must be reachable, before the first request can get a certificate.
-   - `HTTP_PORT` / `HTTPS_PORT` — optional, defaulting to `80`/`443`. Only change them to run a second stack side by side on the same host. A stack on non-standard ports cannot answer either ACME challenge (HTTP-01 needs the real public :80, TLS-ALPN-01 the real public :443) and so cannot obtain a publicly-trusted certificate.
+   - `HTTP_PORT` / `HTTPS_PORT` — optional, defaulting to `80`/`443`. Only change them to run a second stack side by side on the same host. A stack on non-standard ports cannot answer either ACME challenge (HTTP-01 needs the real public :80, TLS-ALPN-01 the real public :443) and so cannot obtain a publicly-trusted certificate. Its `http://` → `https://` redirect is also wrong: Caddy builds the redirect target from the site address with the implied `:443`, so on an `HTTPS_PORT=8443` stack the redirect points at `https://host/` and lands nowhere. Reach a side-by-side stack over `https://host:8443` directly.
 
    **Auth**
-   - `AUTH_SECRET` — generate with `npx auth secret` or `openssl rand -base64 32`. Required; do not leave blank.
+   - `AUTH_SECRET` — generate with `npx auth secret` or `openssl rand -base64 32`. Required; compose refuses to start without it. Optionally `AUTH_SECRET_1`, `AUTH_SECRET_2` and `AUTH_SECRET_3` hold *retired* secrets during a rotation: `src/lib/session.ts` tries them ahead of the current `AUTH_SECRET`, so sessions minted under the old value keep working until you drop the slot. Leave them unset unless you are mid-rotation.
    - `AUTH_URL` — **required, no default, and shipped blank.** The public `https://` URL this deployment is reachable at, matching `SITE_ADDRESS` (e.g. `https://psa.yourmsp.com`), with no trailing slash. Compose fails fast if it is unset. It must be `https://`: Auth.js decides whether to use the `__Secure-` cookie prefix from this URL's protocol alone, so an `http://` value behind TLS silently issues a non-Secure session cookie with no error anywhere. That is the single condition the onboarding guidance below depends on.
 
      **Two things the `${AUTH_URL:?}` guard does not do for you.** It checks *presence*, not shape — `http://...`, a wrong hostname, or a trailing slash all pass it silently. And it only helps if the value is actually absent, which is why `.env.example` ships this blank alongside `POSTGRES_PASSWORD`, `SITE_ADDRESS` and `AUTH_SECRET`: an example value left in place by an operator who skimmed the file would satisfy the guard and start the stack on somebody else's hostname. Verify the result rather than the input — see the cookie-name check under "Creating the first admin account".
@@ -173,7 +173,9 @@ Confirm the services are running:
 docker compose ps
 ```
 
-You should see **three** services: `caddy` (the TLS-terminating reverse proxy, ports `${HTTP_PORT:-80}` and `${HTTPS_PORT:-443}`), `app` (the Next.js web application, **no published port** — reachable only as `app:3000` on the internal network), and `db` (Postgres 16, `127.0.0.1:${DB_PORT:-5432}`). Check logs for any of them with `docker compose logs -f <service>` if a service does not come up healthy.
+You should see **three** services: `caddy` (the TLS-terminating reverse proxy, ports `${HTTP_PORT:-80}` and `${HTTPS_PORT:-443}`), `app` (the Next.js web application, **no published port** — reachable only as `app:3000` on the internal network), and `db` (Postgres 16, `127.0.0.1:${DB_PORT:-5432}`). Check logs for any of them with `docker compose logs -f <service>` if a service does not come up.
+
+> **There are no healthchecks in this stack, by design.** No service defines `healthcheck:`, so `docker compose ps` reports `running`/`exited` and never `healthy`/`unhealthy`, and every `depends_on` resolves to `condition: service_started` — start *ordering* only, not readiness. That is a deliberate operator-facing trade-off rather than an oversight: migrations are run host-side after `up`, and Prisma reconnects on its own if `app` wins the race with `db`, so a readiness gate would buy ordering nothing here depends on. If you add one later, `db` is the service to add it to. There is also no `restart:` policy anywhere — see "Operational notes".
 
 ### The fourth service, `email-poller`, is opt-in
 
@@ -185,9 +187,25 @@ If you *are* using email-to-ticket: fill in all four Azure values in `.env`, the
 docker compose --profile email up -d
 ```
 
-> **The flag is required on every command that should include the poller** — `up`, `ps`, `logs`, `down`, `build`. Without it Compose does not consider the service part of the project at all: `docker compose ps` will not list it (and will not warn you), `docker compose logs email-poller` errors with "no such service", and a plain `docker compose down` leaves a running poller behind. Set `COMPOSE_PROFILES=email` in your shell (or in `.env`) if you would rather not repeat it. If you filled in the Azure block and the poller is simply not there, this flag is the reason.
+> **Use the flag on every command that should include the poller.** Set `COMPOSE_PROFILES=email` in your shell (or in `.env`) if you would rather not repeat it. If you filled in the Azure block and the poller is simply not there, a missing flag is the reason.
+>
+> Compose's behaviour is not uniform across subcommands, and the difference matters most at shutdown. Measured on the Compose in use here (v2 plugin line, `docker compose version` reports v5.1.1), running each command **without** `--profile email` against a project whose poller was already started with it:
+>
+> | Command | Poller included? |
+> |---|---|
+> | `up -d` | **no** — not started (this is the point of the profile) |
+> | `build` | **no** — not built |
+> | `ps` | yes — listed, and listed as running |
+> | `logs email-poller` | yes — works, exits 0 |
+> | `restart` | **no** — the poller keeps its old uptime |
+> | `stop` | **no** — ⚠ the poller keeps running |
+> | `down` | **no** — ⚠ the poller keeps running; the network removal fails with `Resource is still in use` |
+>
+> The two marked ⚠ are the ones that bite: **`docker compose stop` and `docker compose down` do not stop the poller** unless you pass the flag, so a shutdown you believe is complete leaves a container holding live Azure credentials and a live database connection. Always shut down with `docker compose --profile email down` (or with `COMPOSE_PROFILES=email` exported) on a deployment that runs the poller, and check `docker ps` afterwards.
+>
+> One caveat on reproducing the table: passing an explicit `-p <project>` changes the result — with `-p`, `stop`/`down`/`restart` **do** include the profiled service. The commands in this document never pass `-p`, so the table above is what you will actually observe.
 
-If `docker compose up -d` refuses to start with `required variable ... is missing`, that is deliberate: `POSTGRES_PASSWORD`, `SITE_ADDRESS` and `AUTH_URL` have no defaults, because every default this project could have picked for them is a security downgrade.
+If `docker compose up -d` refuses to start with `required variable ... is missing`, that is deliberate: `POSTGRES_PASSWORD`, `SITE_ADDRESS`, `AUTH_URL` and `AUTH_SECRET` have no defaults, because every default this project could have picked for them is a security downgrade. All four fail at `up`, before anything is serving, rather than at the first request that needs them.
 
 ### TLS: what happens on the first request
 
@@ -243,11 +261,13 @@ prisma migrate deploy && bash scripts/post-migrate.sh
 **Confirm both halves landed.** Step 1 announces itself in Prisma's output; step 2 prints `post-migrate.sh: TimeEntry_one_active_timer_per_user partial unique index verified/created.` on success. If you did not see that line — or want to check an existing deployment — query the index directly:
 
 ```bash
-docker compose exec -T db psql -U postgres -d msp_psa \
-  -c "\di+ TimeEntry_one_active_timer_per_user"
+docker compose exec -T db psql -U postgres -d msp_psa -tAc \
+  "select indexname from pg_indexes where indexname = 'TimeEntry_one_active_timer_per_user';"
 ```
 
-One row means the constraint is in place. **No rows means it is missing**, and nothing in the application will tell you: the index is what stops a user holding two running timers at once, so its absence shows up later as duplicate open time entries rather than as an error. Install `postgresql-client` and re-run `npm run db:migrate:deploy` — it is idempotent.
+The index name printed back means the constraint is in place. **Empty output means it is missing**, and nothing in the application will tell you: the index is what stops a user holding two running timers at once, so its absence shows up later as duplicate open time entries rather than as an error. Install `postgresql-client` and re-run `npm run db:migrate:deploy` — it is idempotent.
+
+> **Do not substitute `\di+ TimeEntry_one_active_timer_per_user` here.** psql down-cases an unquoted `\d` pattern, so it searches for `timeentry_...` and never matches this mixed-case identifier: it prints `Did not find any relation named "TimeEntry_one_active_timer_per_user".` and exits 0 **whether the index exists or not** — verified against a live Postgres 16 with the index present and then dropped, byte-identical output both times. A check that cannot produce its own "good" state is worse than no check: it reads as a broken deployment forever. `\di+ "TimeEntry_one_active_timer_per_user"` (inner quotes) does work, but the `pg_indexes` query above is preferred because it is scriptable.
 
 > **Warning — on an upgrade, this must complete before the `app` container restarts.** Application code that runs ahead of its schema does not fail partially here: `authorize()` selects every column, an absent column raises Prisma **P2022** on every request, and the login form reports "Invalid email or password" to everyone including every admin. See "Order matters: apply the migration *before* the app restarts" in the next section for the full explanation and the safe upgrade order.
 
@@ -297,8 +317,10 @@ This works because the `db` service publishes `127.0.0.1:${DB_PORT:-5432}:5432` 
 3. **Restart the services that hold a connection string**:
 
    ```bash
-   docker compose up -d app email-poller
+   docker compose up -d app
    ```
+
+   **Add `email-poller` to that line only if you actually run the poller.** Naming a profiled service explicitly auto-enables its profile, so `docker compose up -d app email-poller` starts the poller on a deployment that has no Azure credentials — it throws at module load and sits `Exited(1)` forever, which is precisely the state profile `email` exists to prevent.
 
    `db` itself does not need restarting — `ALTER USER` took effect immediately. A rebuild is not needed either; these are environment values, not build inputs.
 
@@ -405,10 +427,11 @@ The operational consequence is that **a deactivated person is never told they we
 `ALLOW_DEMO_SEED=true` on the command line:
 
 ```bash
+set -a; . ./.env; set +a
 ALLOW_DEMO_SEED=true npm run db:seed
 ```
 
-Set it **inline, for one command. Never put it in `.env`** — this document tells you to run
+Set `ALLOW_DEMO_SEED` **inline, for one command. Never put it in `.env`** — this document tells you to run
 `set -a; . ./.env; set +a` before host-side commands, which would export it on the deployment
 host and re-arm the script there, exactly the failure the gate prevents.
 
@@ -500,12 +523,19 @@ docker compose exec -T db pg_dump -U postgres -d msp_psa --clean --if-exists \
   > "msp_psa-$(date +%Y%m%d-%H%M%S).sql"
 ```
 
-Restore into a running stack (this **overwrites** the current contents of `msp_psa`):
+Restore (this **overwrites** the current contents of `msp_psa`). **Stop the application first** — do not restore into a stack that is still serving:
 
 ```bash
-docker compose exec -T db psql -U postgres -d msp_psa -v ON_ERROR_STOP=1 \
+docker compose stop app                       # and the poller, if you run it
+docker compose exec -T db psql -U postgres -d msp_psa \
+  -v ON_ERROR_STOP=1 --single-transaction \
   < msp_psa-YYYYMMDD-HHMMSS.sql
+docker compose start app
 ```
+
+> **Why `stop app` and not "restore into a running stack".** The dump begins with `--clean` statements that need an `AccessExclusiveLock`. One idle `app` container holding an ordinary `AccessShareLock` is enough to block the very first `ALTER TABLE`, and the restore then **hangs with no output** — measured: `wait_event_type=Lock` on statement 1, killed at a 120s timeout. Worse, the queued exclusive-lock request blocks every subsequent application query behind it, so attempting recovery takes the site down harder than the incident did. Earlier revisions of this document said "restore into a running stack"; that instruction was wrong.
+>
+> `--single-transaction` is the second half: without it, a failure partway through `ON_ERROR_STOP=1` leaves a half-dropped schema with no way back. With it, a failed restore rolls back to the pre-restore state.
 
 Three things the database dump does **not** cover:
 

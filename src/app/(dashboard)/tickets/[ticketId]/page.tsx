@@ -1,6 +1,6 @@
 import { redirect, notFound } from "next/navigation";
 import { requireActiveUser } from "@/lib/session";
-import { can } from "@/lib/permissions";
+import { can, ADMIN_MANAGE_ROLES } from "@/lib/permissions";
 import { db } from "@/lib/db";
 import { Badge } from "@/components/ui/badge";
 import { SlaBadge } from "@/components/tickets/sla-badge";
@@ -8,6 +8,7 @@ import { TicketCommentForm } from "@/components/tickets/ticket-comment-form";
 import { AssignmentControl } from "@/components/tickets/ticket-form";
 import { TimerControl } from "@/components/tickets/timer-control";
 import { TimeEntryList, type TimeEntryRow } from "@/components/tickets/time-entry-list";
+import { TicketDeleteButton } from "@/components/tickets/ticket-delete-button";
 
 /**
  * Ticket detail page (/tickets/[ticketId]). Gated with can(user.role,
@@ -17,8 +18,15 @@ import { TimeEntryList, type TimeEntryRow } from "@/components/tickets/time-entr
  * implementation), the full comment list (no isInternal filtering -- there
  * is no external portal in this phase's scope, so all ticket:view users may
  * see internal comments per this plan's explicit instruction), a comment
- * form gated to ticket:manage, and an assignment control gated to
- * ticket:assign.
+ * form gated to ticket:manage, an assignment control gated to
+ * ticket:assign, and -- for admins only -- a delete control.
+ *
+ * THE DELETE CONTROL'S GATE IS NOT AUTHORIZATION. It is rendered on the
+ * same ADMIN_MANAGE_ROLES membership that deleteTicket's own requireRole()
+ * call checks, imported from the one constant so the two cannot drift, but
+ * requireRole() is the boundary: a non-admin who invokes the action without
+ * going through this page is redirected to /unauthorized by the server. This
+ * check only keeps a control that would always be refused off the page.
  *
  * params is a Promise in this Next.js version (App Router dynamic segment
  * convention) -- must be awaited before use, matching the established
@@ -180,6 +188,24 @@ export default async function TicketDetailPage({
 
         {can(user.role, "ticket:manage") && <TicketCommentForm ticketId={ticket.id} />}
       </div>
+
+      {ADMIN_MANAGE_ROLES.includes(user.role) && (
+        <div className="flex flex-col gap-3 rounded-md border border-destructive/40 p-4">
+          <div className="flex flex-col gap-1">
+            <h2 className="text-lg font-semibold">Danger zone</h2>
+            <p className="text-sm text-muted-foreground">
+              Deleting this ticket also deletes its comments and its time
+              entries. Time that has already been invoiced blocks the delete.
+            </p>
+          </div>
+          <TicketDeleteButton
+            ticketId={ticket.id}
+            ticketSubject={ticket.subject}
+            commentCount={ticket.comments.length}
+            timeEntryCount={timeEntries.length}
+          />
+        </div>
+      )}
     </div>
   );
 }

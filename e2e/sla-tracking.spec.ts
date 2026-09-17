@@ -1,5 +1,5 @@
-import { test, expect } from "@playwright/test";
-import { loginAs } from "./fixtures";
+import { expect } from "@playwright/test";
+import { test, loginAs } from "./fixtures";
 
 /**
  * SLA tracking E2E spec (Plan 06-08).
@@ -44,7 +44,7 @@ test("SLA-bearing ticket shows a real SLA badge and is reflected on the SLA comp
   await page.getByRole("button", { name: "Create company" }).click();
 
   // createCompany redirects server-side to /clients/{id} on success.
-  await page.waitForURL(/\/clients\/[^/]+$/);
+  await page.waitForURL(/\/clients\/(?!new$)[^/]+$/);
 
   // ---- Create an SLA-bearing Contract under that company ----------------
   // Contracts tab is not the default tab (Sites is) -- switch to it.
@@ -90,14 +90,20 @@ test("SLA-bearing ticket shows a real SLA badge and is reflected on the SLA comp
   await page.getByRole("button", { name: "Create ticket" }).click();
 
   // createTicket redirects server-side to /tickets/{id} on success.
-  await page.waitForURL(/\/tickets\/[^/]+$/);
+  await page.waitForURL(/\/tickets\/(?!new$)[^/]+$/);
 
   // ---- Assert a real, non-"No SLA" SlaBadge renders on the detail page --
   // A brand-new ticket has firstRespondedAt/resolvedAt both null and both
   // SLA deadlines in the future (60/480 minutes out), so getSlaStatus
   // deterministically returns "on_track" -> SlaBadge renders the text
   // "On track" (src/components/tickets/sla-badge.tsx's STATUS_LABEL map).
-  await expect(page.getByText(ticketSubject)).toBeVisible();
+  // getByRole("heading"), NOT getByText: Next renders a permanent
+  // `<div role="alert" id="__next-route-announcer__">` carrying the new
+  // page's title, so getByText(ticketSubject) matched the <h1> AND that
+  // announcer and died on a strict-mode violation. The announcer is a
+  // `div`, so an explicit heading role can only resolve to the <h1>.
+  // Same pattern tickets.spec.ts already uses on this page.
+  await expect(page.getByRole("heading", { level: 1, name: ticketSubject })).toBeVisible();
   const slaBadge = page.getByText("On track", { exact: true });
   await expect(slaBadge).toBeVisible();
   await expect(page.getByText("No SLA", { exact: true })).not.toBeVisible();
@@ -126,12 +132,43 @@ test("SLA-bearing ticket shows a real SLA badge and is reflected on the SLA comp
   // company) should show the SLA-bearing contract just created --
   // confirming the report page's underlying query reflects this spec's
   // real, freshly-written data rather than stale or placeholder content.
-  await expect(page.getByText(/Block Hours \(started/)).toBeVisible();
+  //
+  // The contract Select must be OPENED to assert this. CompanyContractFilter
+  // renders the contract labels as Radix SelectItems inside SelectContent,
+  // which Radix mounts only while the select is open; with no contractId in
+  // the URL the closed trigger reads "All contracts" and the label is
+  // nowhere in the DOM. The previous assertion looked for the label on the
+  // closed page and failed with "element(s) not found" -- it had never run
+  // before this cycle, because the spec died four assertions earlier on the
+  // route-announcer strict-mode violation above.
+  await page.locator("#contractId").click();
+  await expect(
+    page.getByRole("option", { name: /^Block Hours \(started/ }),
+  ).toBeVisible();
+
+  // Close it again before asserting on anything else. Radix renders the open
+  // SelectContent in a portal and marks the rest of the document inert, so
+  // the two summary-card headings below are absent from the accessibility
+  // tree -- and `getByRole` reads the accessibility tree -- while it is open.
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("option", { name: /^Block Hours \(started/ })).toHaveCount(0);
 
   // Response/Resolution summary cards render without error either way
   // (real data either as counts or an explicit "No data in this range"
   // state -- both are valid, deterministic outcomes; a thrown/500 page is
   // the only failure mode this assertion rules out).
-  await expect(page.getByRole("heading", { name: "Response" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Resolution" })).toBeVisible();
+  //
+  // Located by the card-title slot, NOT by getByRole("heading"): the summary
+  // cards' titles are rendered by `CardTitle`, which is a plain `<div>`
+  // unless the caller passes `asChild` with a real heading element, and
+  // sla-compliance-summary.tsx does not. So these two strings carry no
+  // heading role and `getByRole("heading", ...)` matched nothing -- an
+  // assertion that could never have passed, which went unnoticed because the
+  // spec had never reached this line. (That the report's two section titles
+  // are not headings is a real accessibility gap, but it lives in `src/` and
+  // is reported rather than papered over here.) The slot attribute scopes
+  // each locator to exactly one element, so no `.first()` is needed.
+  const cardTitles = page.locator('[data-slot="card-title"]');
+  await expect(cardTitles.filter({ hasText: /^Response$/ })).toBeVisible();
+  await expect(cardTitles.filter({ hasText: /^Resolution$/ })).toBeVisible();
 });

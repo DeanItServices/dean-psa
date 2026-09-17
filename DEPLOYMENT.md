@@ -524,7 +524,7 @@ npm run test:e2e
 >
 > For a pre-promotion check against staging, exercise the flows by hand using the onboarding steps above rather than running this suite.
 
-`npm run test:e2e:advisory` runs the three pre-Phase-7 specs separately. They are **expected to fail today** — they had never been executed against a browser until Phase 7, and ROADMAP Phase 9 owns their first real run and fixing what breaks. They are kept out of `test:e2e` deliberately: Playwright's exit code is per-process, not per-project, so including them would make the gate permanently red and destroy its signal. `npm run test:e2e:all` runs everything if you want the full picture.
+`npm run test:e2e:advisory` runs the three pre-Phase-7 specs on their own. They were kept out of the gate while they were red — Playwright's exit code is per-process, not per-project, so a red project makes the whole gate permanently red and destroys its signal. **Phase 9 fixed them**, so that reasoning no longer applies: `advisory` is now part of `npm run test:e2e`, which runs **53** tests (up from 45) and includes the three ticket-delete cases. `npm run test:e2e:all` still runs everything.
 
 Known gaps, intentional and documented in the specs themselves:
 - `scripts/create-admin.ts` has no automated test: it is gated on an interactive TTY, so it cannot be driven by the suite as written. Its behaviour is evidenced only by a manual transcript.

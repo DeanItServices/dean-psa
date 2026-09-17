@@ -46,10 +46,29 @@ import { E2E_BASE_URL, E2E_PORT, E2E_SERVER_IS_EXTERNAL } from "./e2e/target";
  *                 It is also why the testMatch is a two-file alternation rather
  *                 than a directory: adding a spec to this project is a decision
  *                 about admin accounts, not a filename convention.
- *   advisory   -- the three pre-Phase-7 specs. They have never been run against
- *                 a browser; ROADMAP Phase 9 owns their first real run and
- *                 fixing what breaks. They are evidence here, not a gate, and
- *                 nothing depends on them, so their failures block nothing.
+ *   advisory   -- the three pre-Phase-7 specs. THE NAME IS NOW HISTORICAL:
+ *                 they are in the gate, and `npm run test:e2e` fails if they
+ *                 fail. It is kept only because renaming a project renames it
+ *                 in every report and CI selector that already refers to it.
+ *
+ *                 This comment used to say they had "never been run against a
+ *                 browser" and that "ROADMAP Phase 9 owns their first real run
+ *                 and fixing what breaks". 09-01 did the running (1 passed, 4
+ *                 failed, 2 skipped -- the first execution in the project's
+ *                 history) and Plan 09-04 did the fixing. Every failure was in
+ *                 the specs, not the product: one shared rate-limit bucket,
+ *                 one `waitForURL` regex that also matched the `/new` form the
+ *                 page was already on, two locators that matched a visible
+ *                 element and a hidden duplicate, one assertion on a heading
+ *                 role that does not exist, a 65s wait inside a 30s budget, a
+ *                 stranded timer row that poisoned every later run, and a
+ *                 negative assertion standing in for a wait.
+ *
+ *                 They were excluded from the gate while they were red,
+ *                 because a permanently red gate has no signal. That reason
+ *                 expired when they went green, so they were folded in: the
+ *                 gate went from 45 tests to 53 and, until then, said nothing
+ *                 at all about ticket delete.
  *   last-active-admin -- runs only after `lifecycle` has finished, because it
  *                 CANNOT be correct while another spec holds a second active
  *                 admin open. See the spec's own header: its precondition is

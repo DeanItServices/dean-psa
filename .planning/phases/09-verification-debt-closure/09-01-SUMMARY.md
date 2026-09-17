@@ -96,8 +96,10 @@ experiment. Database evidence shows the 429 caused real data loss: `assignedToId
 runs A and B, populated after C. The `assignTicket` POST was being 429'd and silently never
 persisted.
 
-**Layer 2 — three of four are one locator defect class**, a locator matching a visible element and a
-hidden duplicate:
+**Layer 2 — ~~three of four~~ TWO of four are one locator defect class** (corrected 2026-09-17:
+09-04 found the `tickets.spec.ts` entry below was the URL race wearing a locator's clothes — the
+hidden `<option>` it matched lives in the *create form's* select, i.e. on the wrong page. Reverting
+that locator now passes). A locator matching a visible element and a hidden duplicate:
 
 1. `sla-tracking.spec.ts:101` — `getByText` matches the `<h1>` **and** Next's route announcer. The
    correct pattern already exists at `tickets.spec.ts:104`.
@@ -107,13 +109,30 @@ hidden duplicate:
 
 All three are consistent with specs written but never executed against a browser.
 
-**4. `tickets.spec.ts:188` (kanban drag) — genuinely unresolved.** Status stayed `new` in the
-database across all three runs including limits-raised, so not a 429 and not a locator issue. The
-obvious product explanation was ruled out: `draggable = can(role, "ticket:manage")` and dispatcher
-**is** in `TICKET_MANAGE_ROLES`. That leaves the synthetic pointer sequence failing dnd-kit's
+**4. `tickets.spec.ts:188` (kanban drag) — ~~genuinely unresolved~~ OVERTURNED BY 09-04.**
+
+> **CORRECTED 2026-09-17.** This diagnosis was wrong, and the correction is recorded here rather
+> than only in 09-04 because this is the summary a future reader would find first.
+>
+> The drag was **never broken**. 09-04 found that `await page.waitForURL(/\/tickets\/[^/]+$/)`
+> also matches `/tickets/new` — the create form the page is already sitting on — so the wait
+> returned instantly, before the redirect landed. Tests that *stored* that URL later re-opened a
+> blank create form and asserted about a ticket that was never on screen.
+>
+> Database evidence, all 7 kanban tickets ever created on this machine: **every one is
+> `in_progress`, including the pre-change baseline run.** The Server Action persisted correctly
+> every time. Both candidate causes named below — dnd-kit's `activationConstraint: { distance: 4 }`
+> and `closestCorners` droppable resolution — are ruled out.
+>
+> The claim below that "status stayed `new` in the database across all runs" was mistaken, most
+> likely by querying the row the raced URL pointed at rather than the ticket under test.
+
+*Original text, retained so the correction is legible:* Status stayed `new` in the database across
+all three runs including limits-raised, so not a 429 and not a locator issue. The obvious product
+explanation was ruled out: `draggable = can(role, "ticket:manage")` and dispatcher **is** in
+`TICKET_MANAGE_ROLES`. That leaves the synthetic pointer sequence failing dnd-kit's
 `activationConstraint: { distance: 4 }`, or `closestCorners` not resolving to the targeted
-droppable. The agent declined to guess at a fix — the cause may live in `e2e/` or in `src/`, and it
-did not own either answer.
+droppable.
 
 ## Other findings
 

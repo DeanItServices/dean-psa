@@ -1,4 +1,4 @@
-import { test, type Browser, type BrowserContext, type Page } from "@playwright/test";
+import { test as base, type Browser, type BrowserContext, type Page } from "@playwright/test";
 
 /**
  * Shared E2E helpers: login, hydration, and per-context client identity.
@@ -6,10 +6,11 @@ import { test, type Browser, type BrowserContext, type Page } from "@playwright/
  * Used by 06-06 (ticket lifecycle), 06-07 (time entry to invoice), 06-08 (SLA
  * tracking) and Phase 7's user-lifecycle and last-active-admin specs.
  *
- * This file declares no `test()` and is not a `.spec.ts`, so Playwright's
- * testMatch never executes it. It does import `test` -- solely for
- * `test.info().workerIndex`, which is what gives each worker a distinct client
- * identity (see `isolatedClientHeaders`).
+ * This file declares no `test()` CASE and is not a `.spec.ts`, so Playwright's
+ * testMatch never executes it. It does import the base `test` object -- for
+ * `base.info().workerIndex`, which is what gives each worker a distinct client
+ * identity (see `isolatedClientHeaders`), and to export the extended `test`
+ * below that hands the built-in `page` fixture its own rate-limit bucket.
  */
 
 /**
@@ -80,9 +81,51 @@ let ipCounter = 0;
 
 function isolatedClientHeaders(): Record<string, string> {
   ipCounter += 1;
-  const worker = test.info().workerIndex + 1;
+  const worker = base.info().workerIndex + 1;
   return { "x-forwarded-for": `198.18.${worker}.${ipCounter}` };
 }
+
+/**
+ * `test`, with the built-in `page`/`context` fixture given its own rate-limit
+ * bucket. Import this instead of `@playwright/test`'s `test` and a spec using
+ * the bare `{ page }` fixture gets the same isolation `newIsolatedContext()`
+ * gives a hand-built context.
+ *
+ * WHY THIS EXISTS AT ALL, rather than each spec calling `newIsolatedContext`.
+ * Before Phase 9 that helper was the ONLY way to get a bucket, so it was
+ * available only to specs that built their own context. The three pre-Phase-7
+ * specs use `{ page }`, so all three shared ONE bucket -- src/proxy.ts allows
+ * 60 requests per IP per 60s, and a suite driving a real browser through
+ * multi-step workflows blows through that in under a minute. The failure is
+ * not a clean error: a Server Action POST that is 429'd rejects in the browser
+ * and the page simply never updates, so it presents as an unrelated 30s
+ * locator timeout, or -- worse -- as a write that silently never persisted.
+ * 09-01 proved the mechanism by raising RATE_LIMIT_* and watching
+ * `assignedToId` go from empty to populated with no code change.
+ *
+ * Overriding the `extraHTTPHeaders` OPTION is what makes this a single root
+ * fix rather than one edit per call site: every context Playwright builds for
+ * a test -- including ones created later by `browser.newContext()` inheriting
+ * the option -- picks it up, and a spec opts in by changing its import line.
+ * The option is merged, not replaced, so a `test.use({ extraHTTPHeaders })`
+ * elsewhere still composes.
+ */
+export const test = base.extend({
+  // The second parameter is Playwright's fixture-provider callback, which its
+  // docs conventionally name `use`. It is named `provide` here ONLY because
+  // eslint-config-next's react-hooks/rules-of-hooks reads a bare `use(...)`
+  // call as React 19's `use` hook and fails the lint with "React Hook `use` is
+  // called in function `extraHTTPHeaders`". Playwright passes this argument
+  // positionally, so the name is free -- renaming it keeps `npm run lint` at
+  // zero problems without suppressing a rule anywhere. Do not "restore" it to
+  // `use`.
+  extraHTTPHeaders: async (
+    { extraHTTPHeaders }: { extraHTTPHeaders: Record<string, string> | undefined },
+    provide: (headers: Record<string, string>) => Promise<void>,
+  ) => {
+    await provide({ ...extraHTTPHeaders, ...isolatedClientHeaders() });
+  },
+});
 
 /**
  * The headers a context was created with, so a direct `context.request` call
@@ -108,7 +151,7 @@ export function clientHeaders(context: BrowserContext): Record<string, string> {
 export async function newIsolatedContext(browser: Browser): Promise<BrowserContext> {
   const headers = isolatedClientHeaders();
   const context = await browser.newContext({
-    baseURL: test.info().project.use.baseURL,
+    baseURL: base.info().project.use.baseURL,
     extraHTTPHeaders: headers,
   });
   contextHeaders.set(context, headers);

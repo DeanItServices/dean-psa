@@ -1,5 +1,5 @@
-import { test, expect } from "@playwright/test";
-import { loginAs, newIsolatedContext, ROLE_CREDENTIALS } from "./fixtures";
+import { expect } from "@playwright/test";
+import { test, loginAs, newIsolatedContext, ROLE_CREDENTIALS } from "./fixtures";
 import { captureActionCall, invokeAction, type ActionCall } from "./actions";
 import { confirmInAlertDialog, expectPathname } from "./admin-users";
 import { disconnectPrisma, prisma } from "./db";
@@ -10,6 +10,20 @@ import { disconnectPrisma, prisma } from "./db";
  * Covers: ticket creation, a Kanban status transition, assignment to a
  * technician, and the admin-only delete behaviour hardened by Plan 09-02
  * (`src/lib/actions/tickets.ts`'s `deleteTicket`).
+ *
+ * WHY EVERY POST-SUBMIT `waitForURL` CARRIES `(?!new$)`. The obvious regex,
+ * `/\/tickets\/[^/]+$/`, also matches `/tickets/NEW` -- the create form the
+ * page is already sitting on when the wait starts. So the wait returned
+ * instantly, before createTicket's redirect had landed, and any `page.url()`
+ * captured straight afterwards could still be the form's own URL. Tests that
+ * merely assert against the current page usually won the race and looked
+ * fine; the two that STORE the url and navigate back to it later (the Kanban
+ * and assignment cases) silently re-opened `/tickets/new` -- a blank create
+ * form -- and then failed on an assertion about a ticket that was never on
+ * screen. Measured directly: a probe logged `PROBE_URL=.../tickets/new`
+ * immediately after the wait resolved. The same one-character-class bug was
+ * present on every `/clients/` wait too (`/clients/new` matches), and is
+ * fixed in the same way throughout this suite.
  *
  * Real, confirmed selectors used below (read from source during this plan's
  * execution, not guessed):
@@ -90,7 +104,7 @@ test.describe("Ticket lifecycle", () => {
     await page.goto("/clients/new");
     await page.locator("#name").fill(companyName);
     await page.getByRole("button", { name: "Create company" }).click();
-    await page.waitForURL(/\/clients\/[^/]+$/);
+    await page.waitForURL(/\/clients\/(?!new$)[^/]+$/);
     const companyId = page.url().split("/clients/")[1];
     expect(companyId).toBeTruthy();
 
@@ -105,7 +119,7 @@ test.describe("Ticket lifecycle", () => {
     await page.getByRole("button", { name: "Create ticket" }).click();
 
     // createTicket redirects to /tickets/{id} on success.
-    await page.waitForURL(/\/tickets\/[^/]+$/);
+    await page.waitForURL(/\/tickets\/(?!new$)[^/]+$/);
 
     // Assert: detail page renders the submitted subject/description.
     await expect(page.getByRole("heading", { level: 1, name: subject })).toBeVisible();
@@ -124,7 +138,7 @@ test.describe("Ticket lifecycle", () => {
     await page.goto("/clients/new");
     await page.locator("#name").fill(companyName);
     await page.getByRole("button", { name: "Create company" }).click();
-    await page.waitForURL(/\/clients\/[^/]+$/);
+    await page.waitForURL(/\/clients\/(?!new$)[^/]+$/);
 
     await loginAs(page, "dispatcher");
     await page.goto("/tickets/new");
@@ -133,7 +147,7 @@ test.describe("Ticket lifecycle", () => {
     await page.locator("#subject").fill(subject);
     await page.locator("#description").fill("E2E kanban description");
     await page.getByRole("button", { name: "Create ticket" }).click();
-    await page.waitForURL(/\/tickets\/[^/]+$/);
+    await page.waitForURL(/\/tickets\/(?!new$)[^/]+$/);
     const ticketId = page.url().split("/tickets/")[1];
 
     // Act: drag the new ticket's card from the "New" column to "In
@@ -203,7 +217,7 @@ test.describe("Ticket lifecycle", () => {
     await page.goto("/clients/new");
     await page.locator("#name").fill(companyName);
     await page.getByRole("button", { name: "Create company" }).click();
-    await page.waitForURL(/\/clients\/[^/]+$/);
+    await page.waitForURL(/\/clients\/(?!new$)[^/]+$/);
 
     await loginAs(page, "dispatcher");
     await page.goto("/tickets/new");
@@ -212,7 +226,7 @@ test.describe("Ticket lifecycle", () => {
     await page.locator("#subject").fill(subject);
     await page.locator("#description").fill("E2E assignment description");
     await page.getByRole("button", { name: "Create ticket" }).click();
-    await page.waitForURL(/\/tickets\/[^/]+$/);
+    await page.waitForURL(/\/tickets\/(?!new$)[^/]+$/);
     const ticketId = page.url();
 
     // Act: dispatcher has ticket:assign, so the detail page renders the
@@ -220,15 +234,57 @@ test.describe("Ticket lifecycle", () => {
     // ("Technician Test User", per prisma/seed.ts's TEST_USERS name field --
     // AssignmentControl's SelectItem renders user.name ?? user.email).
     await page.locator("#assign").click();
-    await page.getByRole("option", { name: "Technician Test User" }).click();
 
-    // AssignmentControl calls assignTicket directly (no page navigation) --
-    // wait for its own success signal (the error text NOT appearing) rather
-    // than a URL change, then reload to confirm server-side persistence.
-    await expect(page.getByRole("alert")).toHaveCount(0);
+    // Wait for the Server Action's own POST to come back before reloading.
+    //
+    // WHAT THIS REPLACED, AND WHY IT WAS A BUG RATHER THAN A STYLE CHOICE.
+    // The previous line was `await expect(page.getByRole("alert"))
+    // .toHaveCount(0)`, described as waiting for "its own success signal
+    // (the error text NOT appearing)". A negative assertion that is already
+    // true is satisfied on its first evaluation, so it waited for nothing at
+    // all: `assignTicket` was still in flight when `page.goto()` fired below,
+    // and the reload could render the ticket BEFORE the write committed.
+    // Because `toHaveText` retries against an already-loaded page rather than
+    // re-navigating, the stale "Unassigned" it read then stayed stale for the
+    // full 5s timeout and the test failed.
+    //
+    // Measured, not theorised: this failed 1 run in 7 against an otherwise
+    // green suite, and the database showed `assignedToId` populated for
+    // EVERY one of those tickets including the failing run's -- so the write
+    // always landed and the test was simply reading too early. A Server
+    // Action POSTs to the page's own URL, so this resolves exactly when the
+    // assignment has been committed server-side.
+    const assignPosted = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" && response.url().startsWith(ticketId),
+    );
+    await page.getByRole("option", { name: "Technician Test User" }).click();
+    await assignPosted;
+
+    // Scoped to AssignmentControl's own error paragraph, NOT
+    // getByRole("alert"): Next renders a permanent role="alert" route
+    // announcer on every page, which is exactly the trap e2e/fixtures.ts
+    // documents for loginExpectingFailure.
+    await expect(page.locator('p[role="alert"]')).toHaveCount(0);
 
     await page.goto(ticketId);
-    await expect(page.getByText("Technician Test User")).toBeVisible();
+    // Assert on the Select TRIGGER, not on free text. Radix Select renders a
+    // hidden native <select> alongside the visible trigger, so
+    // getByText("Technician Test User") matched that `<option>` -- which is
+    // `hidden`, so the assertion was failing against an element the user can
+    // never see. `#assign` is the trigger's own id (ticket-form.tsx's
+    // AssignmentControl), it is the selector this very test already uses to
+    // OPEN the select a few lines up, and an id can only resolve to one
+    // element -- so this is a scoped, unambiguous locator rather than a
+    // `.first()` papering over the duplicate.
+    //
+    // Deliberately NOT getByRole("combobox", { name: "Assigned to" }): the
+    // trigger is a <button>, whose accessible name comes from its own
+    // subtree, not from `<Label htmlFor="assign">`. Its accname is therefore
+    // the selected value itself, so that locator matches nothing. Confirmed
+    // by dumping the element's outerHTML -- no aria-label, no
+    // aria-labelledby.
+    await expect(page.locator("#assign")).toHaveText("Technician Test User");
   });
 
   // -------------------------------------------------------------------------

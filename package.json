@@ -12,7 +12,7 @@
     "db:seed": "prisma db seed",
     "bootstrap:admin": "tsx scripts/create-admin.ts",
     "email-poller": "tsx scripts/email-poller.ts",
-    "test:e2e": "playwright test --project=lifecycle --project=last-active-admin",
+    "test:e2e": "playwright test --project=lifecycle --project=advisory --project=last-active-admin",
     "test:e2e:advisory": "playwright test --project=advisory",
     "test:e2e:all": "playwright test"
   },

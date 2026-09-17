@@ -1,5 +1,6 @@
-import { test, expect } from "@playwright/test";
-import { loginAs } from "./fixtures";
+import { expect } from "@playwright/test";
+import { test, loginAs, ROLE_CREDENTIALS } from "./fixtures";
+import { disconnectPrisma, prisma } from "./db";
 
 /**
  * E2E spec: time entry to invoice.
@@ -58,9 +59,53 @@ const EXPECTED_TOTAL = (EXPECTED_MINUTES / 60) * HOURLY_RATE;
 const TIMER_WAIT_MS = 65_000;
 
 test.describe("time entry to invoice", () => {
+  /**
+   * Close any timer this spec left running.
+   *
+   * THIS IS THE ONE PIECE OF STATE THE SPEC CANNOT LEAVE BEHIND, and without
+   * this hook it poisons itself. `TimeEntry_one_active_timer_per_user` (a
+   * partial unique index, see scripts/post-migrate.sh) allows a user exactly
+   * ONE entry with `endedAt IS NULL`. A run that dies between "Start Timer"
+   * and "Stop Timer" -- which is most of the run's wall-clock time, thanks to
+   * the unavoidable 65s wait -- strands one, and from then on EVERY later run
+   * fails at a DIFFERENT assertion: `startTimer` can no longer insert, so
+   * "Timer running:" never appears and the failure points at the timer UI
+   * rather than at the orphan actually causing it. Observed directly this
+   * cycle, and it cost a full diagnostic detour.
+   *
+   * Scoped to the seeded technician (the only account this spec runs a timer
+   * as) and to OPEN entries only, so it can never delete billable history --
+   * including the entry this spec stops and invoices, which by then has an
+   * `endedAt` and is untouched.
+   *
+   * It also corrects the module doc's claim above that the spec needs no
+   * pre-existing database state: that was true of every table except this
+   * one.
+   */
+  test.afterEach(async () => {
+    await prisma().timeEntry.deleteMany({
+      where: { user: { email: ROLE_CREDENTIALS.technician.email }, endedAt: null },
+    });
+  });
+
+  test.afterAll(async () => {
+    await disconnectPrisma();
+  });
+
   test("logging billable time against a ticket produces a correctly-computed invoice", async ({
     page,
   }) => {
+    // This test CANNOT pass on Playwright's 30s default: the module doc above
+    // explains why the timer wait cannot go below ~60s (stopTimer floors real
+    // server-side elapsed wall-clock time, and there is no manual
+    // time-entry UI to fabricate a duration with), so TIMER_WAIT_MS alone is
+    // 65s. Before this cycle the spec never reached the wait -- it died at the
+    // contract assertion ~40 lines earlier -- so the impossible budget was
+    // invisible. This is not a padded timeout to mask flake: it is the
+    // smallest budget that fits one 65s wait plus three logins and an invoice
+    // generation.
+    test.setTimeout(180_000);
+
     const uniqueSuffix = Date.now();
     const companyName = `E2E Billing Co ${uniqueSuffix}`;
     const ticketSubject = `E2E time-to-invoice ticket ${uniqueSuffix}`;
@@ -71,7 +116,7 @@ test.describe("time entry to invoice", () => {
     await page.goto("/clients/new");
     await page.locator("#name").fill(companyName);
     await page.getByRole("button", { name: "Create company" }).click();
-    await page.waitForURL(/\/clients\/[^/]+$/);
+    await page.waitForURL(/\/clients\/(?!new$)[^/]+$/);
 
     const companyUrl = page.url();
     const companyId = companyUrl.split("/clients/")[1];
@@ -87,7 +132,20 @@ test.describe("time entry to invoice", () => {
     await page.locator("#startDate").fill(today);
 
     await page.getByRole("button", { name: "Add contract" }).click();
-    await expect(page.getByText("Hourly Break-Fix")).toBeVisible();
+    // getByRole("cell"), NOT getByText. Two reasons, and the second is the
+    // important one:
+    //   1. getByText("Hourly Break-Fix") matched both the visible
+    //      `<span data-slot="select-value">` inside the #billingType trigger
+    //      and the hidden `<option>` in Radix's native select -- a
+    //      strict-mode violation.
+    //   2. Resolving that ambiguity TOWARDS the trigger would have produced
+    //      an assertion with no signal: the trigger shows what was chosen in
+    //      the form and stays visible even if createContract fails outright.
+    //      The created row is the claim this line is making, and
+    //      contracts-tab.tsx renders the billing type as a TableCell -- so
+    //      the cell role is both unambiguous and the thing worth asserting.
+    //      Same pattern sla-tracking.spec.ts uses for its SLA cells.
+    await expect(page.getByRole("cell", { name: "Hourly Break-Fix" })).toBeVisible();
     await expect(page.getByText(`$${HOURLY_RATE}/hr`)).toBeVisible();
 
     // --- Step 2: technician creates a Ticket against that Company, logs time ---
@@ -101,7 +159,7 @@ test.describe("time entry to invoice", () => {
       .locator("#description")
       .fill("E2E spec: verifying time-entry-to-invoice billing math.");
     await page.getByRole("button", { name: "Create ticket" }).click();
-    await page.waitForURL(/\/tickets\/[^/]+$/);
+    await page.waitForURL(/\/tickets\/(?!new$)[^/]+$/);
 
     const ticketUrl = page.url();
 

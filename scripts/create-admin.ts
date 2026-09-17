@@ -7,9 +7,11 @@
  *
  * This is the documented path to the first real account. It replaces the
  * previous guidance in DEPLOYMENT.md ("run prisma/seed.ts with
- * ALLOW_SEED_IN_PRODUCTION=true, or insert a User row by hand"). The seed's
- * guard rail stays exactly as it is -- it is simply no longer the documented
- * way to create a production admin.
+ * ALLOW_SEED_IN_PRODUCTION=true, or insert a User row by hand"). That escape
+ * hatch is gone: prisma/seed.ts no longer honours ALLOW_SEED_IN_PRODUCTION at
+ * all and now refuses to run ANYWHERE without an explicit ALLOW_DEMO_SEED=true
+ * on the command line. Seeding is a development convenience; this script is
+ * the only supported way to create a production admin.
  *
  * THIS FILE IS THE INTERACTIVE SHELL ONLY. Argv parsing, the TTY gate,
  * prompting, echo suppression, printing and the process exit code live here.

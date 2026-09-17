@@ -1,0 +1,97 @@
+# Caddy terminates TLS in front of the app container.
+#
+# The site address comes from SITE_ADDRESS in .env (e.g. psa.example.com), so no
+# MSP-specific hostname is committed to this repository. Caddy obtains and renews
+# the certificate AUTOMATICALLY via ACME on the first request for that hostname.
+# This file sets no `tls` and no `acme` directive, so BOTH of Caddy's default
+# challenges stay enabled: HTTP-01 on :80 and TLS-ALPN-01 on :443. Caddy picks
+# whichever succeeds. Two things must hold on the host:
+#
+#   1. Public DNS for SITE_ADDRESS resolves to this host, and
+#   2. inbound TCP :80 is reachable from the public internet. Strictly, :443
+#      alone can satisfy TLS-ALPN-01, so blocking :80 does not prevent issuance
+#      outright -- but it does break the http:// -> https:// redirect below and
+#      removes the HTTP-01 fallback, leaving issuance with no second chance if
+#      TLS-ALPN-01 fails. Open :80. It is not the thing forcing HTTPS; the
+#      redirect is.
+#
+# NOT VERIFIED: no publicly-trusted certificate was ever issued against this
+# config during development. Every observation recorded in this repository comes
+# from Caddy's INTERNAL CA answering for `localhost`, which exercises none of
+# the ACME path above. Treat first-boot issuance as untested and watch
+# `docker compose logs caddy` on the first real request.
+#
+# Caddy redirects http:// to https:// by itself once a certificate exists.
+# Issued certificates and the ACME account key live in the caddy_data volume
+# (docker-compose.yml); losing that volume forces re-issuance and can hit
+# Let's Encrypt rate limits, so do not prune it casually.
+
+{$SITE_ADDRESS} {
+	# Access log to stdout, which is what `docker compose logs caddy` reads.
+	# Caddy logs NOTHING per-request without this: the default logger covers
+	# only server/runtime events, so with no `log` directive `docker compose
+	# logs caddy` never prints a request line at all.
+	#
+	# Load-bearing for an operational check, not just for curiosity: each entry
+	# carries `remote_ip`, which is how DEPLOYMENT.md's post-go-live step
+	# detects the docker-proxy lockout hazard (every client arriving as the same
+	# bridge-gateway address, collapsing the whole internet into one rate-limit
+	# bucket). Without this line that check silently produces no output and
+	# reads as "nothing wrong".
+	log
+
+	reverse_proxy app:3000 {
+		# TRUST BOUNDARY -- load-bearing, do not delete.
+		#
+		# `caddy validate` WILL tell you to delete the X-Forwarded-For line:
+		#   "Unnecessary header_up X-Forwarded-For: the reverse proxy's default
+		#    behavior is to pass headers to the upstream"
+		# That lint is wrong here and the warning is expected on every run. It
+		# describes Caddy's CURRENT DEFAULT, which is exactly the conditional
+		# this block exists to remove. Do not act on it.
+		#
+		# getClientIp() in src/proxy.ts reads the FIRST comma-separated entry of
+		# X-Forwarded-For and rate-limits per that value, so whatever sits in
+		# position 0 is what the brute-force limiter buckets on.
+		#
+		# Caddy's default (no trusted_proxies covering the peer) is to DROP a
+		# client-supplied X-Forwarded-For and send only the address it accepted
+		# the connection from -- verified on caddy:alpine 2.11.4. But that
+		# default is conditional: as soon as any trusted_proxies range covers the
+		# peer (e.g. the commonly pasted `trusted_proxies private_ranges`), Caddy
+		# APPENDS instead, and a forged `X-Forwarded-For: 1.2.3.4` arrives
+		# upstream as `1.2.3.4, <peer>` -- attacker-controlled value first,
+		# exactly where the limiter looks (caddyserver/caddy#6783).
+		#
+		# These directives remove the condition: header_up replaces each header
+		# outright with Caddy's own observation of the peer, so position 0 is
+		# never client-supplied regardless of Caddy version or any future
+		# trusted_proxies setting. Verified: with `trusted_proxies 0.0.0.0/0`
+		# and these lines present, upstream still sees only the peer address.
+		header_up X-Forwarded-For {remote_host}
+		# X-Real-IP is getClientIp()'s SECOND choice, read only when
+		# X-Forwarded-For is absent. Without this line a forged X-Real-IP
+		# reaches the app untouched (verified: XFF=[peer] XRI=[66.66.66.66]).
+		# Not exploitable while the line above always sets XFF -- but that makes
+		# the guarantee rest on statement ordering inside application code,
+		# which is not where a trust boundary belongs. Overwrite it here too so
+		# the property holds at the proxy, whatever src/proxy.ts does later.
+		header_up X-Real-IP {remote_host}
+		# Strip the client-supplied forms of the remaining address-bearing
+		# headers. Nothing in this application reads either one today, so this
+		# is latent rather than a live hole -- but both were verified to pass
+		# through forged, and the cost of a future reader trusting one is the
+		# same rate-limit bypass. Deny by default at the boundary.
+		header_up -Forwarded
+		header_up -X-Forwarded-Port
+	}
+}
+
+# FRONTING PROXIES: everything above assumes Caddy is the FIRST hop, i.e. that
+# {remote_host} is the real client. Put Cloudflare, an edge nginx or any other
+# proxy IN FRONT of this and {remote_host} becomes that proxy's address --
+# every client on earth collapses into one rate-limit bucket (demonstrated by
+# chaining two Caddies). If anything fronts this deployment, these header_up
+# lines must be replaced with `trusted_proxies <CIDR of the fronting proxy>`
+# and the app-side parsing in src/proxy.ts revisited to match. See
+# DEPLOYMENT.md, "Network / firewall considerations".

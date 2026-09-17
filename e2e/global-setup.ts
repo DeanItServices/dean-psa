@@ -160,7 +160,8 @@ export default async function globalSetup(): Promise<void> {
           "This run's end-state diff takes the state above as its baseline, so it will",
           "report these as unchanged. Not a failure: a password change legitimately moves",
           "tokenVersion, and the four fields that must never drift are hard-failed at",
-          "teardown. Re-run `npm run db:seed` against a fresh database to clear it.",
+          "teardown. Re-run `ALLOW_DEMO_SEED=true npm run db:seed` against a fresh database",
+          "to clear it (the seed refuses without that opt-in).",
         ].join("\n"),
       );
     }

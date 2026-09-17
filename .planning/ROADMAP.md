@@ -9,7 +9,7 @@
 - [x] Phase 5: Reporting & Dashboards (4 plans) — Complete
 - [x] Phase 6: Polish & Launch Prep (9 plans) — Complete
 - [x] Phase 7: Account Management & Session Freshness (7 plans) — Shipped (PR #20)
-- [ ] Phase 8: Deployment Hardening (4 plans)
+- [x] Phase 8: Deployment Hardening (4 plans) — Shipped (PR #23)
 - [ ] Phase 9: Verification & Debt Closure (3 plans)
 
 ## Phase Details
@@ -114,12 +114,12 @@ verified line references behind each success criterion.*
 **Requirements**: Cross-cutting deployment security (no new product requirements — hardens the Phase 6 deployment story)
 **Recommended Agents**: infrastructure-devops-engineer, engineering-security-engineer, engineering-backend-architect
 **Success Criteria**:
-- [ ] `src/middleware.ts` is migrated to `src/proxy.ts` (Next.js 16 deprecated the middleware convention; Proxy runs on the Node runtime and cannot be configured back to Edge), the export is renamed to `proxy`, and `tsc --noEmit` passes — re-verify the `authAsMiddleware` overload cast rather than copying it blindly
-- [ ] Rate-limit window and thresholds are read from `process.env` with the current values (60s / 60 / 10) as defaults, genuinely runtime-read now that the file is Node-runtime
-- [ ] A Caddy service fronts the app with HTTP-01 automatic TLS; `app` no longer publishes 3000 to the host and is reachable only on the internal Compose network
-- [ ] `getClientIp()` is trustworthy because Caddy overwrites `X-Forwarded-For` — the trust-boundary warning in the file is updated to say the boundary is now enforced
-- [ ] Default `postgres:postgres` credentials are replaced with generated secrets from `.env` in all three places (`db.POSTGRES_PASSWORD`, `app.DATABASE_URL`, `email-poller.DATABASE_URL`) and the host-published `db` port is removed
-- [ ] `DEPLOYMENT.md` and `.env.example` reflect the new topology, including that `POSTGRES_PASSWORD` applies only at initdb so an existing volume needs `ALTER USER`
+- [x] `src/middleware.ts` is migrated to `src/proxy.ts` (Next.js 16 deprecated the middleware convention; Proxy runs on the Node runtime and cannot be configured back to Edge), the export is renamed to `proxy`, and `tsc --noEmit` passes — re-verify the `authAsMiddleware` overload cast rather than copying it blindly
+- [x] Rate-limit window and thresholds are read from `process.env` with the current values (60s / 60 / 10) as defaults, genuinely runtime-read now that the file is Node-runtime
+- [x] A Caddy service fronts the app with automatic ACME TLS; `app` no longer publishes 3000 to the host and is reachable only on the internal Compose network. (The shipped `Caddyfile` sets no `tls`/`acme` directive, so **both** default challenges stay live — HTTP-01 on :80 and TLS-ALPN-01 on :443 — and either can satisfy issuance.)
+- [x] `getClientIp()` is trustworthy — via the shipped `header_up X-Forwarded-For {remote_host}` **and `header_up X-Real-IP {remote_host}`** directives rather than Caddy's (conditional) default; see 08-04-SUMMARY — the trust-boundary warning in the file is updated to say the boundary is now enforced
+- [x] Default `postgres:postgres` credentials are replaced with generated secrets from `.env` in all three places (`db.POSTGRES_PASSWORD`, `app.DATABASE_URL`, `email-poller.DATABASE_URL`) and the `db` port is bound to loopback (`127.0.0.1`) rather than removed — user-approved deviation, see 08-03-SUMMARY
+- [x] `DEPLOYMENT.md` and `.env.example` reflect the new topology, including that `POSTGRES_PASSWORD` applies only at initdb so an existing volume needs `ALTER USER`
 **Plans**: 4
 
 ### Phase 9: Verification & Debt Closure
@@ -145,5 +145,5 @@ verified line references behind each success criterion.*
 | Phase 5: Reporting & Dashboards | 4 | 4 | Complete |
 | Phase 6: Polish & Launch Prep | 9 | 9 | Complete |
 | Phase 7: Account Management & Session Freshness | 7 | 7 | Shipped |
-| Phase 8: Deployment Hardening | 4 | 0 | Pending |
+| Phase 8: Deployment Hardening | 4 | 4 | Shipped |
 | Phase 9: Verification & Debt Closure | 3 | 0 | Pending |

@@ -16,9 +16,11 @@ import { test, type Browser, type BrowserContext, type Page } from "@playwright/
  * Seeded local-dev test-user credentials, one per role, from
  * `prisma/seed.ts` (cross-referenced against `.planning/STATE.md`, which
  * documents the same email pattern and shared password). These accounts
- * only exist in a local/dev database seeded via `npm run db:seed` -- the
- * seed script itself refuses to run with `NODE_ENV=production` unless
- * explicitly overridden. Never valid outside local dev.
+ * only exist in a local/dev database seeded via
+ * `ALLOW_DEMO_SEED=true npm run db:seed` -- the seed script refuses to run
+ * anywhere without that exact opt-in on the command line (the older
+ * NODE_ENV/ALLOW_SEED_IN_PRODUCTION gate is gone). Never valid outside local
+ * dev.
  */
 export const ROLE_CREDENTIALS: Record<
   "technician" | "dispatcher" | "sales" | "finance" | "admin",
@@ -39,12 +41,15 @@ export const ROLE_CREDENTIALS: Record<
  * The X-Forwarded-For value each browser context sends.
  *
  * NOT a convenience, and not masking a failure this suite should be reporting.
- * src/middleware.ts rate-limits per IP -- 60 requests per 60 seconds generally,
- * 10 for a POST to /login -- and its `getClientIp()` falls back to the literal
- * key "unknown" when no X-Forwarded-For or X-Real-IP header is present. With no
- * reverse proxy in front of the app -- the topology this repo's
- * docker-compose.yml ships, as middleware.ts itself documents at length -- every
- * browser context in every spec would share ONE budget. A Server Action POST
+ * src/proxy.ts rate-limits per IP -- 60 requests per 60 seconds generally,
+ * 10 for a POST to /login. NOTE, this comment predates Phase 8 and the two
+ * facts it rested on are both gone: `getClientIp()` no longer falls back to a
+ * shared "unknown" key (it returns null and the caller SKIPS limiting -- see
+ * "Do not restore a shared fallback key" in src/proxy.ts), and
+ * docker-compose.yml now ships Caddy in front of an app that publishes no port.
+ * The shared-budget hazard described below is therefore historical for the
+ * deployed topology; it is retained because a direct-to-app dev server still
+ * has no proxy setting the header, which is the case this suite runs in. A Server Action POST
  * that receives a 429 rejects in the browser and 07-05's handlers turn that into
  * "Something went wrong. Please try again.", which is indistinguishable from a
  * genuine guard-rail bug at the assertion.
@@ -52,10 +57,13 @@ export const ROLE_CREDENTIALS: Record<
  * READ THIS BEFORE TRUSTING ANY RATE-LIMIT CONCLUSION FROM THIS SUITE. Setting
  * this header is itself a demonstration of the finding: any client can mint a
  * fresh rate-limit bucket with one header, so NO result from this suite
- * reflects the shipped topology's rate limiting. That is a Phase 8 input (put a
- * reverse proxy in front that overwrites these headers), not something a test
- * can fix -- and the alternative here is an unrunnable suite, because the
- * limiter would fire on the suite's own traffic long before any assertion.
+ * reflects the shipped topology's rate limiting. Phase 8 fixed that FOR THE
+ * DEPLOYED STACK -- the Caddyfile now overwrites both X-Forwarded-For and
+ * X-Real-IP with the peer address, so a forged header buys nothing there. It
+ * does not, and cannot, change anything here: this suite talks straight to a
+ * dev server with no proxy in front, so the header is still whatever the test
+ * sends. The alternative is an unrunnable suite, because the limiter would fire
+ * on the suite's own traffic long before any assertion.
  *
  * CORRECTED THIS CYCLE. The second octet used to be `Math.random()` evaluated at
  * module load, i.e. once per worker process, with the third octet counting up
@@ -200,7 +208,7 @@ export async function loginAs(
       `loginAs("${role}") expected to land on "/" after sign-in but landed on "${pathname}".` +
         (pathname === "/change-password"
           ? ` The seeded ${email} account has mustChangePassword set;` +
-            ` re-run \`npm run db:seed\` (prisma/seed.ts sets isActive/mustChangePassword explicitly).`
+            ` re-run \`ALLOW_DEMO_SEED=true npm run db:seed\` (prisma/seed.ts sets isActive/mustChangePassword explicitly).`
           : ""),
     );
   }

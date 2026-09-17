@@ -1,35 +1,158 @@
+# Docker's default json-file log driver has NO size limit, and every container
+# here writes to the same filesystem as the pgdata volume -- so any service that
+# logs in a loop, or that an unauthenticated client can make log (Caddy writes a
+# line per request BEFORE authentication), is a path to a full disk and a
+# Postgres that cannot write. Cap all four the same way.
+#
+# TRADE-OFF, and it is a real one: this bounds the ONLY audit trail this product
+# has. Admin-account changes are unstructured lines in the `app` container's
+# stdout, and the `[proxy]` configuration warnings are printed once per process
+# (on the first request Next routes, not at boot) -- both can now be rotated
+# away. DEPLOYMENT.md says so, and gives a check that makes the line appear
+# before looking for it.
+# Ship the logs off-host if you have a retention obligation.
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
+  caddy:
+    image: caddy:alpine
+    ports:
+      # Overridable so a second stack can run side by side, the same reason
+      # DB_PORT exists. HTTP-01 issuance requires the PUBLIC :80 to reach this
+      # container, so HTTP_PORT stays 80 on the deployment that serves traffic.
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?SITE_ADDRESS is required - the public hostname Caddy serves, e.g. psa.example.com}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and the ACME account key. Losing /data forces re-issuance
+      # and can hit Let's Encrypt rate limits.
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+    logging: *default-logging
   app:
     build: .
-    ports:
-      - "3000:3000"
+    # No ports: the app is reachable only on the internal Compose network, at
+    # app:3000, which is where caddy proxies. Publishing 3000 again would let a
+    # client bypass Caddy and forge X-Forwarded-For directly.
+    #
+    # List form, not mapping form: a bare key is OMITTED from the container when
+    # the variable is unset, whereas `KEY: ${KEY}` injects an empty string --
+    # and envInt() in src/proxy.ts rejects empty, so every default deployment
+    # would log warnings at start. Compose resolves bare keys from .env.
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/msp_psa?schema=public
-      AUTH_SECRET: ${AUTH_SECRET}
-      AUTH_URL: ${AUTH_URL:-http://localhost:3000}
-      AUTH_TRUST_HOST: ${AUTH_TRUST_HOST:-true}
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required - see .env.example}@db:5432/msp_psa?schema=public
+      # :? like the other three credentials in this tier. Without it an
+      # unedited .env starts the stack with AUTH_SECRET="" and the failure
+      # surfaces at the first login attempt -- i.e. after go-live -- instead of
+      # at `up`.
+      - AUTH_SECRET=${AUTH_SECRET:?AUTH_SECRET is required - generate with npx auth secret}
+      # Secret-rotation slots, holding RETIRED secrets during a rotation.
+      # authSecrets() in src/lib/auth-secrets.ts reads all three off process.env
+      # and appends them AFTER the current AUTH_SECRET, so a token minted under a
+      # retired secret still decodes while new ones are signed with the current
+      # one. (Symbol name, not a line number, deliberately: the previous citation
+      # here went stale within one commit.) Bare keys (list form) because they
+      # are normally unset. Omitting them here is the same failure the QBO block
+      # below describes: the reads return undefined inside the container no
+      # matter what .env says, and a rotation logs every user out instead of
+      # rolling over cleanly.
+      - AUTH_SECRET_1
+      - AUTH_SECRET_2
+      - AUTH_SECRET_3
+      # No :- default: AUTH_URL is where Auth.js builds its callback and redirect
+      # URLs from, so a wrong value sends users to the wrong origin.
+      #
+      # It no longer controls the cookie. src/auth.config.ts pins
+      # useSecureCookies in production, so the __Secure- prefix holds whatever
+      # the scheme says -- which also means a mistyped http:// is INVISIBLE in
+      # the cookie (measured: both schemes give a 302 and the same __Secure-
+      # cookie). src/proxy.ts's warnOnInsecureAuthUrl() is the only detector.
+      - AUTH_URL=${AUTH_URL:?AUTH_URL is required and must be the public https URL, e.g. https://psa.example.com}
+      - AUTH_TRUST_HOST=${AUTH_TRUST_HOST:-true}
+      # Optional rate-limit overrides read by src/proxy.ts once per process.
+      # Compose's .env interpolates this file only and never reaches a
+      # container, so these must be enumerated here or the reads are always
+      # undefined and the limiter silently stays at its defaults.
+      - RATE_LIMIT_WINDOW_MS
+      - RATE_LIMIT_GENERAL
+      - RATE_LIMIT_AUTH
+      # QuickBooks Online + token encryption. Same reason as the block above:
+      # .dockerignore excludes .env from the build context and Compose's .env is
+      # interpolation-only, so a key not named here simply does not exist inside
+      # the container no matter how carefully the operator filled in .env.
+      # src/lib/qbo.ts (:27,:28,:45), src/lib/actions/invoices.ts (:280) and
+      # src/lib/crypto.ts (:27) read all five straight off process.env, so
+      # omitting them makes every QuickBooks path fail at runtime.
+      #
+      # Bare keys, for the list-form reason above: QBO is optional, and the
+      # mapping form would inject "" for an operator who never configured it,
+      # turning "not connected" into a confusing empty-credential error.
+      - QBO_CLIENT_ID
+      - QBO_CLIENT_SECRET
+      - QBO_ENVIRONMENT
+      - QBO_REDIRECT_URI
+      - TOKEN_ENCRYPTION_KEY
+    logging: *default-logging
     depends_on:
       - db
   email-poller:
     build: .
     command: ["npm", "run", "email-poller"]
+    # Opt-in. scripts/email-poller.ts calls requireEnv() for all four AZURE_*/
+    # MAILBOX_ADDRESS values at MODULE LOAD, so without them the container
+    # throws immediately and sits in Exited(1) forever -- with no restart policy
+    # it does not loop, it just shows up as a permanently failed service in
+    # `docker compose ps` on every deployment that does not use email-to-ticket.
+    # A profile keeps it out of the default `up` instead of normalising a red
+    # service. To run it, fill in the Azure block in .env and start the stack
+    # with `docker compose --profile email up -d` (the flag is required on
+    # EVERY compose command that should include it -- see DEPLOYMENT.md).
+    profiles: ["email"]
+    # List form, same reasoning as `app` above.
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/msp_psa?schema=public
-      AZURE_TENANT_ID: ${AZURE_TENANT_ID}
-      AZURE_CLIENT_ID: ${AZURE_CLIENT_ID}
-      AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET}
-      MAILBOX_ADDRESS: ${MAILBOX_ADDRESS}
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required - see .env.example}@db:5432/msp_psa?schema=public
+      - AZURE_TENANT_ID
+      - AZURE_CLIENT_ID
+      - AZURE_CLIENT_SECRET
+      - MAILBOX_ADDRESS
+      # Poll watermark lives on a named volume, not in the image layer. See the
+      # comment on WATERMARK_FILE in scripts/email-poller.ts: without this the
+      # watermark is lost on every `down`, every rebuild and every host reboot,
+      # and the poller silently resumes from now() -- dropping every mail that
+      # arrived in the gap, with no error and no report.
+      - EMAIL_POLLER_STATE_DIR=/state
+    volumes:
+      - poller_state:/state
+    logging: *default-logging
     depends_on:
       - db
   db:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      # No :- default: an unset variable must fail the stack, not start Postgres
+      # with a guessable or empty password. Note this applies at initdb ONLY --
+      # an existing pgdata volume keeps its old password until ALTER USER.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required - see .env.example}
       POSTGRES_DB: msp_psa
     ports:
-      - "${DB_PORT:-5432}:5432"
+      # Loopback-scoped: Postgres is reachable from this host (migrations, seed,
+      # bootstrap:admin and the E2E suite all run host-side) but from nowhere
+      # else on the network.
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    logging: *default-logging
 volumes:
   pgdata:
+  caddy_data:
+  caddy_config:
+  poller_state:

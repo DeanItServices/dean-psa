@@ -36,8 +36,27 @@ re-ran independently: **3 passed**, and `npm run test:e2e` still **45 passed**.
 
 ## The component
 
-`AlertDialog` + `useTransition` + inline `{ error }`, following `user-row-actions.tsx` — but its
-`catch` deliberately **not** copied, because the actions it calls return rather than redirect.
+`AlertDialog` + `useTransition` + inline `{ error }`, following `user-row-actions.tsx` — **including
+its `catch`, which is byte-identical**.
+
+> **CORRECTED (review cycle 1).** This paragraph previously read: "its `catch` deliberately **not**
+> copied, because the actions it calls return rather than redirect." Both halves are false, and the
+> correction is recorded here rather than silently overwritten because the false rationale is the
+> kind a later reader would reuse.
+>
+> 1. The `catch` **was** copied. `user-row-actions.tsx`'s `handleDeactivate`/`handleReactivate`
+>    catch blocks and `ticket-delete-button.tsx`'s are the same four lines —
+>    `if (isNextRedirectError(err)) { throw err; } setError("Something went wrong. Please try
+>    again.");`
+> 2. The actions `user-row-actions.tsx` calls **do** redirect. Every one of them opens with
+>    `requireRole(ADMIN_MANAGE_ROLES)` (`src/lib/actions/users.ts`), and `requireRole`
+>    (`src/lib/session.ts:249`) calls `redirect("/unauthorized")` on a role miss and
+>    `redirect("/change-password")` when `mustChangePassword` is set. Both throw `NEXT_REDIRECT`.
+>
+> So the rethrow is not a divergence from `user-row-actions.tsx` at all — it is the same guard, for
+> the same reason, and it is load-bearing in both. What genuinely differs is only *which* path
+> redirects on SUCCESS: `deleteTicket` ends in `redirect("/tickets")`, while the user-lifecycle
+> actions return `{ error }` or `{ success }` and redirect only on the authorization path.
 
 - **Refusal path**: the action RETURNS `{ error }` → rendered in a `<p role="alert">` placed
   *outside* `AlertDialogContent`, because Radix unmounts the dialog when its Action fires — an

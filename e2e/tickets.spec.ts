@@ -261,12 +261,49 @@ test.describe("Ticket lifecycle", () => {
     await page.getByRole("option", { name: "Technician Test User" }).click();
     await assignPosted;
 
-    // Scoped to AssignmentControl's own error paragraph, NOT
-    // getByRole("alert"): Next renders a permanent role="alert" route
-    // announcer on every page, which is exactly the trap e2e/fixtures.ts
-    // documents for loginExpectingFailure.
-    await expect(page.locator('p[role="alert"]')).toHaveCount(0);
-
+    // THERE IS DELIBERATELY NO ASSERTION BETWEEN HERE AND THE RELOAD, AND
+    // THIS BLOCK IS THE EVIDENCE FOR WHY. DO NOT ADD ONE BACK WITHOUT READING
+    // IT -- two plausible candidates were tried and BOTH proved vacuous.
+    //
+    // What used to stand here:
+    //   await expect(page.locator('p[role="alert"]')).toHaveCount(0);
+    // described as scoping the "no error appeared" check to
+    // AssignmentControl's own paragraph rather than to `getByRole("alert")`,
+    // which would also match Next's permanent route announcer. The SCOPING was
+    // right; the assertion was the same defect the comment above describes
+    // three lines earlier. An assertion whose expected state is already true
+    // when it is first evaluated is satisfied on that first evaluation and
+    // waits for nothing -- `toHaveCount(0)` retries only while the count is
+    // WRONG.
+    //
+    // Measured against a deliberately broken `assignTicket` that returns
+    // `{ error }`, both arms, same machine:
+    //   - error returned at the top of the action, so the alert paints almost
+    //     immediately: this line FAILED, `Expected: 0 / Received: 1`.
+    //   - the same break plus a 300ms delay between the POST landing and
+    //     `setError` committing: this line PASSED, and the run failed four
+    //     lines further down on the reloaded page instead, reporting a stale
+    //     `"Unassigned"` rather than the refusal that caused it.
+    // 300ms between a Server Action response arriving and React committing is
+    // ordinary on a loaded machine, so the line's signal was a coin flip.
+    //
+    // THE OBVIOUS REPLACEMENT IS ALSO VACUOUS, which is the part worth
+    // recording. Asserting `expect(page.locator("#assign"))
+    // .toHaveText("Technician Test User")` HERE, before the reload, looks like
+    // the positive assertion this wants -- and it is not, because
+    // AssignmentControl's `handleChange` calls `setValue(next)` OPTIMISTICALLY
+    // on the line before it awaits the action
+    // (src/components/tickets/ticket-form.tsx). The trigger therefore reads
+    // the new name from the instant of the click, whatever the server
+    // answers. Run against the 300ms arm above it PASSED, and the run failed
+    // at the reload exactly as before -- no signal gained, one more line to
+    // mislead the next reader.
+    //
+    // So the reload below is the only assertion here with signal, and that is
+    // sound rather than a compromise: `assignPosted` resolves when the Server
+    // Action's response arrives, and the write is committed before that
+    // response is generated. A refusal surfaces as `Received: "Unassigned"`,
+    // which the message on that assertion names explicitly.
     await page.goto(ticketId);
     // Assert on the Select TRIGGER, not on free text. Radix Select renders a
     // hidden native <select> alongside the visible trigger, so
@@ -284,7 +321,12 @@ test.describe("Ticket lifecycle", () => {
     // the selected value itself, so that locator matches nothing. Confirmed
     // by dumping the element's outerHTML -- no aria-label, no
     // aria-labelledby.
-    await expect(page.locator("#assign")).toHaveText("Technician Test User");
+    await expect(
+      page.locator("#assign"),
+      'the reloaded ticket must show the technician as assigned; "Unassigned" here means ' +
+        "assignTicket refused and AssignmentControl reverted its optimistic value -- " +
+        "check the page for its error paragraph rather than reading this as a stale read",
+    ).toHaveText("Technician Test User");
   });
 
   // -------------------------------------------------------------------------

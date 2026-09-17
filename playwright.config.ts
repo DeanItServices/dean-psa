@@ -46,10 +46,28 @@ import { E2E_BASE_URL, E2E_PORT, E2E_SERVER_IS_EXTERNAL } from "./e2e/target";
  *                 It is also why the testMatch is a two-file alternation rather
  *                 than a directory: adding a spec to this project is a decision
  *                 about admin accounts, not a filename convention.
- *   advisory   -- the three pre-Phase-7 specs. THE NAME IS NOW HISTORICAL:
- *                 they are in the gate, and `npm run test:e2e` fails if they
- *                 fail. It is kept only because renaming a project renames it
- *                 in every report and CI selector that already refers to it.
+ *   advisory   -- tickets, sla-tracking and time-entry-to-invoice: 8 tests in
+ *                 3 files. THE NAME IS NOW HISTORICAL: they are in the gate,
+ *                 and `npm run test:e2e` fails if they fail. It is kept only
+ *                 because renaming a project renames it in every report and CI
+ *                 selector that already refers to it. "The three pre-Phase-7
+ *                 specs" is a stale label for the same reason -- the three
+ *                 FILES predate Phase 7, but three of the eight tests (the
+ *                 ticket-delete cases) were written in Phase 9.
+ *
+ *                 IT RUNS CONCURRENTLY WITH `lifecycle`, and that is safe for
+ *                 the one reason that matters here: it mutates no `User` rows,
+ *                 so it cannot break `last-active-admin`'s precondition that
+ *                 the seeded admin is the only admin who can still log in.
+ *                 Checked rather than assumed -- the only Prisma models these
+ *                 three specs touch are Company, Ticket, TimeEntry, Invoice and
+ *                 InvoiceLineItem, and none of them calls the one non-admin
+ *                 app path that writes a User row (logoutAction's tokenVersion
+ *                 increment, src/app/(auth)/login/actions.ts). They only ever
+ *                 log IN, as the seeded fixtures. Adding a spec here that
+ *                 creates, deactivates or re-roles an account is therefore the
+ *                 same decision as adding one to `lifecycle` below -- see that
+ *                 project's note.
  *
  *                 This comment used to say they had "never been run against a
  *                 browser" and that "ROADMAP Phase 9 owns their first real run

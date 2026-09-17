@@ -516,7 +516,7 @@ npm run test:e2e
 
 `e2e/db.ts` does not use dotenv at all. Its `envValue()` reads `.env` by hand, takes everything after the first `=`, trims it and strips surrounding quotes — and performs **no `${...}` expansion**. Since `.env.example` ships `DATABASE_URL="postgresql://postgres:${POSTGRES_PASSWORD}@..."`, an operator who copied the template and skipped the prelude hands Prisma the literal placeholder. `envValue()` prefers `process.env` when it is set, so exporting first is what makes it read the real value. `npm run db:seed` goes through `prisma7.config.ts` and dotenv, which has the same non-expansion behaviour.
 
-`npm run test:e2e` runs the **gate** projects (`lifecycle` + `last-active-admin`). Per `playwright.config.ts` it starts its own `next dev` on port **3100** (override with `E2E_PORT`) — it will not reuse a server already listening, and a build-identity check in `e2e/global-setup.ts` aborts the run if the server answering is not built from the current source. That check exists because an earlier configuration silently graded a stale container image.
+`npm run test:e2e` runs the **gate**: all three projects — `lifecycle`, `advisory` and `last-active-admin`, **53 tests across 7 files**. (`advisory` joined the gate in Phase 9; before that the gate was `lifecycle` + `last-active-admin` only, at 45 tests.) Per `playwright.config.ts` it starts its own `next dev` on port **3100** (override with `E2E_PORT`) — it will not reuse a server already listening, and a build-identity check in `e2e/global-setup.ts` aborts the run if the server answering is not built from the current source. That check exists because an earlier configuration silently graded a stale container image.
 
 > **This suite is for a local development database only. Do not point it at staging or production.**
 >
@@ -524,7 +524,13 @@ npm run test:e2e
 >
 > For a pre-promotion check against staging, exercise the flows by hand using the onboarding steps above rather than running this suite.
 
-`npm run test:e2e:advisory` runs the three pre-Phase-7 specs on their own. They were kept out of the gate while they were red — Playwright's exit code is per-process, not per-project, so a red project makes the whole gate permanently red and destroys its signal. **Phase 9 fixed them**, so that reasoning no longer applies: `advisory` is now part of `npm run test:e2e`, which runs **53** tests (up from 45) and includes the three ticket-delete cases. `npm run test:e2e:all` still runs everything.
+`npm run test:e2e:advisory` runs the `advisory` project on its own — **8 tests in 3 files** (`tickets`, `sla-tracking`, `time-entry-to-invoice`). The project name and the "three pre-Phase-7 specs" label are historical and now undercount it: those three *files* predate Phase 7, but three of the eight tests — the ticket-delete cases — were written in Phase 9.
+
+`advisory` was kept out of the gate while it was red, because Playwright's exit code is per-process, not per-project, so a red project makes the whole gate permanently red and destroys its signal. **Phase 9 fixed the specs**, so that reasoning no longer applies and `advisory` is now part of `npm run test:e2e` (45 tests → 53).
+
+`npm run test:e2e:all` is an **alias** for `npm run test:e2e`, not a superset: `test:e2e` names all three projects explicitly and `playwright.config.ts` defines no fourth, so both select the same 53 tests in the same 7 files. It is kept only because existing scripts and docs refer to it; if a project is ever added that is deliberately outside the gate, this is the script that must change.
+
+**CI runs with `retries: 2`** (`playwright.config.ts`, `process.env.CI ? 2 : 0`), so a line reported as **flaky** in CI means a test failed and then passed on a retry — a real finding to investigate, not noise to discount. Retries make an intermittent failure much harder to see: a test that fails independently 1 run in 4 is reported green roughly 98% of the time under two retries. Treat any `flaky` count above zero as a failure that has not been diagnosed yet.
 
 Known gaps, intentional and documented in the specs themselves:
 - `scripts/create-admin.ts` has no automated test: it is gated on an interactive TTY, so it cannot be driven by the suite as written. Its behaviour is evidenced only by a manual transcript.

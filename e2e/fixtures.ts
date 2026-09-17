@@ -103,12 +103,45 @@ function isolatedClientHeaders(): Record<string, string> {
  * 09-01 proved the mechanism by raising RATE_LIMIT_* and watching
  * `assignedToId` go from empty to populated with no code change.
  *
- * Overriding the `extraHTTPHeaders` OPTION is what makes this a single root
- * fix rather than one edit per call site: every context Playwright builds for
- * a test -- including ones created later by `browser.newContext()` inheriting
- * the option -- picks it up, and a spec opts in by changing its import line.
- * The option is merged, not replaced, so a `test.use({ extraHTTPHeaders })`
- * elsewhere still composes.
+ * HOW FAR THE OVERRIDE ACTUALLY REACHES -- measured, because the mechanism is
+ * not the one the shape of this code suggests. Overriding the
+ * `extraHTTPHeaders` option is a single root fix rather than one edit per call
+ * site, and a spec opts in by changing its import line.
+ *
+ * It reaches EVERY BrowserContext created during a test, not just the built-in
+ * `context`/`page` fixtures -- including one built by a bare
+ * `browser.newContext()` with no options. That is worth stating because the
+ * obvious reading of Playwright's source says otherwise: the merged value
+ * lands in the internal `_combinedContextOptions` fixture, and the only
+ * consumer that LOOKS relevant is `_contextFactory`, which only `context` and
+ * `page` use. The reach comes from somewhere else -- `_setupArtifacts`
+ * installs a `runBeforeCreateBrowserContext` hook
+ * (node_modules/playwright/lib/index.js) that copies every
+ * `_combinedContextOptions` key into any context's options unless that key was
+ * passed explicitly.
+ *
+ * Verified rather than reasoned about, with a throwaway spec that intercepted
+ * the outgoing request in each case:
+ *   - `{ page }` fixture        -> x-forwarded-for: 198.18.1.1
+ *   - bare `browser.newContext()` in the same test -> x-forwarded-for: 198.18.1.1
+ *
+ * Note the second line carefully: the raw context inherits the SAME address,
+ * it does not mint a new one. `isolatedClientHeaders()` runs once per fixture
+ * resolution, so a test that drives both `{ page }` and a hand-built context
+ * spends ONE 60-request budget across both. `newIsolatedContext()` passes
+ * `extraHTTPHeaders` explicitly, which is why it still wins over the inherited
+ * value and still gets a bucket of its own -- that is what makes it the right
+ * helper for a spec that opens several contexts, and the reason to keep using
+ * it rather than a bare `browser.newContext()`.
+ *
+ * `test.use({ extraHTTPHeaders: ... })` in a spec does NOT compose with this --
+ * it REPLACES it, silently returning that spec to the shared bucket. Also
+ * measured: with `test.use({ extraHTTPHeaders: { "x-probe": ... } })` in
+ * force, the outgoing request carried the probe header and NO
+ * x-forwarded-for at all. The cause is that the override below is a plain
+ * fixture and deliberately drops `{ option: true }`, so `test.use` supplies a
+ * constant that shadows this function instead of feeding it. If a spec ever
+ * needs extra headers, add them inside this fixture, not through `test.use`.
  */
 export const test = base.extend({
   // The second parameter is Playwright's fixture-provider callback, which its

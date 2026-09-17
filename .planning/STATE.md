@@ -1,10 +1,10 @@
 # Project State
 
 ## Current Position
-- **Phase**: 9 of 10 (planned)
-- **Status**: Phase 9 planned -- 3 plans across 2 waves. Spec written and critiqued (acceptance checks negative-controlled). Phase 8 shipped via PR #23.
-- **Last Activity**: Phase 9 planning (2026-09-17)
-- **Next Action**: Run `/legion:build` to execute Phase 9: Verification & Debt Closure
+- **Phase**: 9 of 10 (executed, pending review)
+- **Status**: Phase 9 complete -- all 4 plans executed successfully across 3 waves. Gate widened 45 -> 53 tests; advisory suite green for the first time.
+- **Last Activity**: Phase 9 execution (2026-09-17)
+- **Next Action**: Run `/legion:review` to verify Phase 9: Verification & Debt Closure
 
 ## Progress
 ```

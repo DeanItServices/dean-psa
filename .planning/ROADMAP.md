@@ -10,8 +10,9 @@
 - [x] Phase 6: Polish & Launch Prep (9 plans) — Complete
 - [x] Phase 7: Account Management & Session Freshness (7 plans) — Shipped (PR #20)
 - [x] Phase 8: Deployment Hardening (4 plans) — Shipped (PR #23)
-- [ ] Phase 9: Verification & Debt Closure (4 plans) — In progress
+- [ ] Phase 9: Verification & Debt Closure (4 plans) — Executed, pending review
 - [ ] Phase 10: QuickBooks Item Mapping (deferred from Phase 9)
+- [ ] Phase 11: Delete Safety & Audit Trail (proposed — surfaced during Phase 9)
 
 ## Phase Details
 
@@ -130,11 +131,11 @@ verified line references behind each success criterion.*
 **Requirements**: Cross-cutting quality (no new product requirements — closes documented debt)
 **Recommended Agents**: testing-qa-verification-specialist, engineering-backend-architect, engineering-frontend-developer
 **Success Criteria**:
-- [ ] `npm run test:e2e` executes against a real browser and passes; any failures caused by `fullyParallel: true` sharing the dev database are recorded explicitly, so the separate-test-database decision can be made on evidence
-- [ ] Ticket delete is admin-only and **refuses when any of the ticket's time entries has a non-null `invoiceLineItemId`**, returning an error naming the invoice — `TimeEntry.ticket` is `onDelete: Cascade` while `TimeEntry.invoiceLineItem` is `SetNull` (both in `model TimeEntry`, `prisma/schema.prisma` — cited by symbol because the line numbers this roadmap carried had drifted by nine), so an unguarded delete destroys billed time and leaves the line item that billed it
-- [ ] A confirmation dialog wires the ticket detail page to `deleteTicket`, and the two `test.fixme` cases in `e2e/tickets.spec.ts` are rewritten as admin/non-admin and invoiced-time cases
-- [ ] `deleteTicket`'s docstring names the `TimeEntry` cascade, not just `TicketComment`
-- [ ] The `advisory` Playwright project passes, or each remaining failure is diagnosed to a named cause — added 2026-09-17 after 09-01's first-ever advisory run returned `1 passed, 4 failed, 2 skipped`
+- [x] `npm run test:e2e` executes against a real browser and passes; any failures caused by `fullyParallel: true` sharing the dev database are recorded explicitly, so the separate-test-database decision can be made on evidence
+- [x] Ticket delete is admin-only and **refuses when any of the ticket's time entries has a non-null `invoiceLineItemId`**, returning an error naming the invoice — `TimeEntry.ticket` is `onDelete: Cascade` while `TimeEntry.invoiceLineItem` is `SetNull` (both in `model TimeEntry`, `prisma/schema.prisma` — cited by symbol because the line numbers this roadmap carried had drifted by nine), so an unguarded delete destroys billed time and leaves the line item that billed it
+- [x] A confirmation dialog wires the ticket detail page to `deleteTicket`, and the two `test.fixme` cases in `e2e/tickets.spec.ts` are rewritten as admin/non-admin and invoiced-time cases
+- [x] `deleteTicket`'s docstring names the `TimeEntry` cascade, not just `TicketComment`
+- [x] The `advisory` Playwright project passes, or each remaining failure is diagnosed to a named cause — added 2026-09-17 after 09-01's first-ever advisory run returned `1 passed, 4 failed, 2 skipped`
 **Plans**: 4
 
 > **Criterion moved to Phase 10 on 2026-09-17 (user decision).** The QBO `ItemRef` criterion
@@ -143,6 +144,20 @@ verified line references behind each success criterion.*
 > unobserved integration — the position Phase 8 ended in with ACME issuance, which its review had
 > to label NOT VERIFIED. Deferring keeps the verification requirement honest rather than quietly
 > dropping it. See `.planning/phases/09-verification-debt-closure/09-CONTEXT.md`.
+
+### Phase 11: Delete Safety & Audit Trail (proposed — surfaced during Phase 9)
+**Goal**: Close the two destruction hazards Phase 9 found next to the one it fixed, and give ticket
+deletion an audit record.
+**Requirements**: Cross-cutting quality (no new product requirements)
+**Recommended Agents**: engineering-backend-architect, engineering-security-engineer
+**Why this exists**: Phase 9 made `deleteTicket` refuse when a ticket's time is invoiced. Two
+adjacent problems were found while doing it, recorded in `09-02-SUMMARY.md` and `09-03-SUMMARY.md`,
+and are out of scope for a phase that was planned without them.
+**Success Criteria**:
+- [ ] `deleteCompany` carries the same invoiced-time guard as `deleteTicket`. `Company → Ticket → TimeEntry` is all `onDelete: Cascade`, so deleting a company still destroys billing history unguarded — the exact hazard Phase 9 closed one path to. Its docstring warns about Sites/Contacts/Contracts/Assets and does not mention Tickets, TimeEntries or Invoices, so the warning understates the reach
+- [ ] Ticket deletion leaves an audit record — who deleted what and when. There is currently no soft-delete, no archive and no log; `DEPLOYMENT.md` now says so explicitly
+- [ ] The SLA report's "Response"/"Resolution" section titles carry a heading role. They render as `<div data-slot="card-title">`, so the report has no navigable structure below its `<h1>`; `CardTitle` supports `asChild` for exactly this
+**Plans**: TBD
 
 ### Phase 10: QuickBooks Item Mapping
 **Goal**: Replace the hardcoded QuickBooks `ItemRef` with a real, operator-chosen default item, so
@@ -170,5 +185,6 @@ central success criterion cannot be verified, which is why this is its own phase
 | Phase 6: Polish & Launch Prep | 9 | 9 | Complete |
 | Phase 7: Account Management & Session Freshness | 7 | 7 | Shipped |
 | Phase 8: Deployment Hardening | 4 | 4 | Shipped |
-| Phase 9: Verification & Debt Closure | 4 | 2 | In progress (wave 1 complete) |
+| Phase 9: Verification & Debt Closure | 4 | 4 | Complete |
 | Phase 10: QuickBooks Item Mapping | TBD | 0 | Pending (needs QBO credentials) |
+| Phase 11: Delete Safety & Audit Trail | TBD | 0 | Proposed |

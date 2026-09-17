@@ -145,20 +145,6 @@ verified line references behind each success criterion.*
 > to label NOT VERIFIED. Deferring keeps the verification requirement honest rather than quietly
 > dropping it. See `.planning/phases/09-verification-debt-closure/09-CONTEXT.md`.
 
-### Phase 11: Delete Safety & Audit Trail (proposed — surfaced during Phase 9)
-**Goal**: Close the two destruction hazards Phase 9 found next to the one it fixed, and give ticket
-deletion an audit record.
-**Requirements**: Cross-cutting quality (no new product requirements)
-**Recommended Agents**: engineering-backend-architect, engineering-security-engineer
-**Why this exists**: Phase 9 made `deleteTicket` refuse when a ticket's time is invoiced. Two
-adjacent problems were found while doing it, recorded in `09-02-SUMMARY.md` and `09-03-SUMMARY.md`,
-and are out of scope for a phase that was planned without them.
-**Success Criteria**:
-- [ ] `deleteCompany` carries the same invoiced-time guard as `deleteTicket`. `Company → Ticket → TimeEntry` is all `onDelete: Cascade`, so deleting a company still destroys billing history unguarded — the exact hazard Phase 9 closed one path to. Its docstring warns about Sites/Contacts/Contracts/Assets and does not mention Tickets, TimeEntries or Invoices, so the warning understates the reach
-- [ ] Ticket deletion leaves an audit record — who deleted what and when. There is currently no soft-delete, no archive and no log; `DEPLOYMENT.md` now says so explicitly
-- [ ] The SLA report's "Response"/"Resolution" section titles carry a heading role. They render as `<div data-slot="card-title">`, so the report has no navigable structure below its `<h1>`; `CardTitle` supports `asChild` for exactly this
-**Plans**: TBD
-
 ### Phase 10: QuickBooks Item Mapping
 **Goal**: Replace the hardcoded QuickBooks `ItemRef` with a real, operator-chosen default item, so
 invoice lines reference an item the MSP actually sells rather than whatever happens to be item 1.
@@ -171,6 +157,20 @@ central success criterion cannot be verified, which is why this is its own phase
 - [ ] The hardcoded QBO `ItemRef.value: "1"` in `src/lib/actions/invoices.ts` is replaced by a connection-level default item, stored on `QuickBooksConnection`
 - [ ] `/admin/quickbooks` offers a picker populated from a **live** QBO item list, and the item-list endpoint is verified against the real company or a sandbox before the picker ships
 - [ ] Invoice push uses the chosen item; a connection with no item chosen fails with a clear error rather than silently falling back to `"1"`
+**Plans**: TBD
+
+### Phase 11: Delete Safety & Audit Trail (proposed — surfaced during Phase 9)
+**Goal**: Close the two destruction hazards Phase 9 found next to the one it fixed, and give ticket
+deletion an audit record.
+**Requirements**: Cross-cutting quality (no new product requirements)
+**Recommended Agents**: engineering-backend-architect, engineering-security-engineer
+**Why this exists**: Phase 9 made `deleteTicket` refuse when a ticket's time is invoiced. Two
+adjacent problems were found while doing it, recorded in `09-02-SUMMARY.md` and `09-03-SUMMARY.md`,
+and are out of scope for a phase that was planned without them.
+**Success Criteria**:
+- [ ] `deleteCompany` carries the same invoiced-time guard as `deleteTicket`. `Company → Ticket → TimeEntry` is all `onDelete: Cascade`, so deleting a company still destroys billing history unguarded — the exact hazard Phase 9 closed one path to. Its docstring warns about Sites/Contacts/Contracts/Assets and does not mention Tickets, TimeEntries or Invoices, so the warning understates the reach
+- [ ] Ticket deletion leaves an audit record — who deleted what and when. There is currently no soft-delete, no archive and no log; `DEPLOYMENT.md` now says so explicitly
+- [ ] The SLA report's "Response"/"Resolution" section titles carry a heading role. They render as `<div data-slot="card-title">`, so the report has no navigable structure below its `<h1>`; `CardTitle` supports `asChild` for exactly this
 **Plans**: TBD
 
 ## Progress

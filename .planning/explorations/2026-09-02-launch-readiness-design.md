@@ -62,7 +62,7 @@ The exploration scope is the gap between "v1 phases complete" and "real MSP user
 
 **Ticket delete destroys billing records — undocumented in the action**
 - `deleteTicket`'s docstring claims it "Cascades to the ticket's TicketComments (onDelete: Cascade in prisma/schema.prisma)". That is incomplete.
-- `prisma/schema.prisma:265` also declares `TimeEntry.ticket` as `onDelete: Cascade`. Deleting a ticket therefore destroys **every time entry logged against it**.
+- `prisma/schema.prisma:265` also declares `TimeEntry.ticket` as `onDelete: Cascade`. Deleting a ticket therefore destroys **every time entry logged against it**. *[Line numbers drifted: as of 2026-09-17 the relation is at `:274` and `invoiceLineItem` at `:284`. Both facts hold; cite `model TimeEntry` by symbol.]*
 - `TimeEntry.invoiceLineItem` is `onDelete: SetNull` (`:280`) — the *line item* survives. So an invoice would retain its total while losing the time records that justify it. Silent billing-history corruption, reachable from a UI that does not exist yet.
 - This is why the delete decision below is narrower than "wire up a button".
 

@@ -10,7 +10,8 @@
 - [x] Phase 6: Polish & Launch Prep (9 plans) — Complete
 - [x] Phase 7: Account Management & Session Freshness (7 plans) — Shipped (PR #20)
 - [x] Phase 8: Deployment Hardening (4 plans) — Shipped (PR #23)
-- [ ] Phase 9: Verification & Debt Closure (3 plans)
+- [ ] Phase 9: Verification & Debt Closure (3 plans) — Planned
+- [ ] Phase 10: QuickBooks Item Mapping (deferred from Phase 9)
 
 ## Phase Details
 
@@ -86,7 +87,9 @@
 
 ---
 
-*Phases 7-9 form the **Launch Readiness (v1 Go-Live)** milestone. Source:
+*Phases 7-9 form the **Launch Readiness (v1 Go-Live)** milestone. Phase 10 sits outside it —
+it closes a Phase 4 debt item that does not block go-live, and it is gated on QuickBooks
+credentials the build environment does not currently have. Source:
 `.planning/explorations/2026-09-02-launch-readiness-design.md` — read it before planning
 any of these phases; it carries the decisions, the rejected alternatives, and the
 verified line references behind each success criterion.*
@@ -123,16 +126,36 @@ verified line references behind each success criterion.*
 **Plans**: 4
 
 ### Phase 9: Verification & Debt Closure
-**Goal**: Run the E2E suite against a real browser for the first time and close the three known debt items carried out of Phases 4 and 6.
+**Goal**: Run the E2E suite against a real browser for the first time and close the ticket-delete debt carried out of Phase 6 — making deletion admin-only and refusing it when the ticket's time is already invoiced. (The third debt item, the QBO `ItemRef` hardcode, moved to Phase 10 — see the note below.)
 **Requirements**: Cross-cutting quality (no new product requirements — closes documented debt)
 **Recommended Agents**: testing-qa-verification-specialist, engineering-backend-architect, engineering-frontend-developer
 **Success Criteria**:
 - [ ] `npm run test:e2e` executes against a real browser and passes; any failures caused by `fullyParallel: true` sharing the dev database are recorded explicitly, so the separate-test-database decision can be made on evidence
-- [ ] Ticket delete is admin-only and **refuses when any of the ticket's time entries has a non-null `invoiceLineItemId`**, returning an error naming the invoice — `TimeEntry.ticket` is `onDelete: Cascade` (`prisma/schema.prisma:265`) while `TimeEntry.invoiceLineItem` is `SetNull`, so an unguarded delete destroys billed time and leaves the line item that billed it
+- [ ] Ticket delete is admin-only and **refuses when any of the ticket's time entries has a non-null `invoiceLineItemId`**, returning an error naming the invoice — `TimeEntry.ticket` is `onDelete: Cascade` while `TimeEntry.invoiceLineItem` is `SetNull` (both in `model TimeEntry`, `prisma/schema.prisma` — cited by symbol because the line numbers this roadmap carried had drifted by nine), so an unguarded delete destroys billed time and leaves the line item that billed it
 - [ ] A confirmation dialog wires the ticket detail page to `deleteTicket`, and the two `test.fixme` cases in `e2e/tickets.spec.ts` are rewritten as admin/non-admin and invoiced-time cases
 - [ ] `deleteTicket`'s docstring names the `TimeEntry` cascade, not just `TicketComment`
-- [ ] The hardcoded QBO `ItemRef.value: "1"` (`src/lib/actions/invoices.ts:367`) is replaced by a connection-level default item chosen from a live QBO item list on `/admin/quickbooks`; the item-list endpoint is verified against the real company or a sandbox first
 **Plans**: 3
+
+> **Criterion moved to Phase 10 on 2026-09-17 (user decision).** The QBO `ItemRef` criterion
+> required the item-list endpoint be "verified against the real company or a sandbox first", and
+> no `QBO_*` credentials exist in this environment. Building it here would have shipped an
+> unobserved integration — the position Phase 8 ended in with ACME issuance, which its review had
+> to label NOT VERIFIED. Deferring keeps the verification requirement honest rather than quietly
+> dropping it. See `.planning/phases/09-verification-debt-closure/09-CONTEXT.md`.
+
+### Phase 10: QuickBooks Item Mapping
+**Goal**: Replace the hardcoded QuickBooks `ItemRef` with a real, operator-chosen default item, so
+invoice lines reference an item the MSP actually sells rather than whatever happens to be item 1.
+**Requirements**: Accounting integration (QuickBooks or Xero) — closes the last Phase 4 debt item
+**Recommended Agents**: engineering-backend-architect, engineering-frontend-developer
+**Prerequisite**: QuickBooks sandbox or production credentials available to the build environment
+(`QBO_CLIENT_ID`, `QBO_CLIENT_SECRET`, `QBO_ENVIRONMENT`, a connected realm). Without them the
+central success criterion cannot be verified, which is why this is its own phase.
+**Success Criteria**:
+- [ ] The hardcoded QBO `ItemRef.value: "1"` in `src/lib/actions/invoices.ts` is replaced by a connection-level default item, stored on `QuickBooksConnection`
+- [ ] `/admin/quickbooks` offers a picker populated from a **live** QBO item list, and the item-list endpoint is verified against the real company or a sandbox before the picker ships
+- [ ] Invoice push uses the chosen item; a connection with no item chosen fails with a clear error rather than silently falling back to `"1"`
+**Plans**: TBD
 
 ## Progress
 
@@ -146,4 +169,5 @@ verified line references behind each success criterion.*
 | Phase 6: Polish & Launch Prep | 9 | 9 | Complete |
 | Phase 7: Account Management & Session Freshness | 7 | 7 | Shipped |
 | Phase 8: Deployment Hardening | 4 | 4 | Shipped |
-| Phase 9: Verification & Debt Closure | 3 | 0 | Pending |
+| Phase 9: Verification & Debt Closure | 3 | 0 | Planned |
+| Phase 10: QuickBooks Item Mapping | TBD | 0 | Pending (needs QBO credentials) |

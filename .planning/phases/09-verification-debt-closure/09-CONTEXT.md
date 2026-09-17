@@ -96,6 +96,18 @@ These are HIGH-priority action items applied as plan constraints:
 | 09-01 E2E first real run | 1 | — | testing-qa-verification-specialist |
 | 09-02 `deleteTicket` hardening | 1 | — | engineering-backend-architect + engineering-security-engineer |
 | 09-03 Delete UI, real tests, final gate | 2 | 09-01, 09-02 | engineering-frontend-developer + testing-qa-verification-specialist |
+| 09-04 Fix the advisory suite | 3 | 09-03 | testing-qa-verification-specialist + engineering-frontend-developer |
+
+### 09-04 was added mid-execution (2026-09-17, user decision)
+
+09-01 ran `npm run test:e2e:advisory` for the first time in the project's history and got
+`1 passed, 4 failed, 2 skipped`. `playwright.config.ts` claimed "ROADMAP Phase 9 owns their first
+real run and fixing what breaks", but Phase 9's success criteria and the spec named only
+`npm run test:e2e` — so the *fixing* half had no owner. The user assigned it here rather than
+deferring it.
+
+It is wave 3, not parallel with 09-03, because **both edit `e2e/tickets.spec.ts`**. File-overlap
+forces serialization regardless of anything else.
 
 ### File ownership — the one real conflict, pre-empted
 09-01 and 09-02 run in parallel and touch disjoint trees (`e2e/**` vs `src/lib/actions/tickets.ts`).

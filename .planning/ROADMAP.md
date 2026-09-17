@@ -10,7 +10,7 @@
 - [x] Phase 6: Polish & Launch Prep (9 plans) — Complete
 - [x] Phase 7: Account Management & Session Freshness (7 plans) — Shipped (PR #20)
 - [x] Phase 8: Deployment Hardening (4 plans) — Shipped (PR #23)
-- [ ] Phase 9: Verification & Debt Closure (3 plans) — Planned
+- [ ] Phase 9: Verification & Debt Closure (4 plans) — In progress
 - [ ] Phase 10: QuickBooks Item Mapping (deferred from Phase 9)
 
 ## Phase Details
@@ -134,7 +134,8 @@ verified line references behind each success criterion.*
 - [ ] Ticket delete is admin-only and **refuses when any of the ticket's time entries has a non-null `invoiceLineItemId`**, returning an error naming the invoice — `TimeEntry.ticket` is `onDelete: Cascade` while `TimeEntry.invoiceLineItem` is `SetNull` (both in `model TimeEntry`, `prisma/schema.prisma` — cited by symbol because the line numbers this roadmap carried had drifted by nine), so an unguarded delete destroys billed time and leaves the line item that billed it
 - [ ] A confirmation dialog wires the ticket detail page to `deleteTicket`, and the two `test.fixme` cases in `e2e/tickets.spec.ts` are rewritten as admin/non-admin and invoiced-time cases
 - [ ] `deleteTicket`'s docstring names the `TimeEntry` cascade, not just `TicketComment`
-**Plans**: 3
+- [ ] The `advisory` Playwright project passes, or each remaining failure is diagnosed to a named cause — added 2026-09-17 after 09-01's first-ever advisory run returned `1 passed, 4 failed, 2 skipped`
+**Plans**: 4
 
 > **Criterion moved to Phase 10 on 2026-09-17 (user decision).** The QBO `ItemRef` criterion
 > required the item-list endpoint be "verified against the real company or a sandbox first", and
@@ -169,5 +170,5 @@ central success criterion cannot be verified, which is why this is its own phase
 | Phase 6: Polish & Launch Prep | 9 | 9 | Complete |
 | Phase 7: Account Management & Session Freshness | 7 | 7 | Shipped |
 | Phase 8: Deployment Hardening | 4 | 4 | Shipped |
-| Phase 9: Verification & Debt Closure | 3 | 0 | Planned |
+| Phase 9: Verification & Debt Closure | 4 | 2 | In progress (wave 1 complete) |
 | Phase 10: QuickBooks Item Mapping | TBD | 0 | Pending (needs QBO credentials) |

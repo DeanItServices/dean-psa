@@ -6,7 +6,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import { requireRole } from "@/lib/session";
-import { TICKET_MANAGE_ROLES, TICKET_ASSIGN_ROLES } from "@/lib/permissions";
+import { ADMIN_MANAGE_ROLES, TICKET_MANAGE_ROLES, TICKET_ASSIGN_ROLES } from "@/lib/permissions";
 import { computeSlaDeadlines } from "@/lib/sla";
 import { ticketSchema, ticketUpdateSchema } from "@/lib/validations/ticket";
 
@@ -219,34 +219,77 @@ export async function assignTicket(id: string, assignedToId: string | null) {
   }
 }
 
+/** Invoice periods are rendered with a fixed locale so the refusal message below
+ * is deterministic rather than dependent on the server's locale. Matches the
+ * "en-US"/medium convention used by the contracts and reports views. */
+const invoicePeriodFormatter = new Intl.DateTimeFormat("en-US", { dateStyle: "medium" });
+
 /**
- * Deletes a Ticket. Same RBAC gate as createTicket/updateTicket, plus an
- * additional ownership check for technicians: a technician may only delete a
- * ticket assigned to them (dispatcher/admin retain unrestricted delete,
- * matching their broader triage/administrative scope -- see 06-CONTEXT.md's
- * "Ownership-scoped delete approach"). This is NOT a new Permission literal
- * in permissions.ts -- it's an in-function check layered on top of the
- * existing ticket:manage gate. The ownership lookup happens before the
- * delete so a rejected technician gets a clear ownership error rather than a
- * generic not-found; a concurrently-deleted/nonexistent ticket still falls
- * through to the existing P2025 "Ticket not found" path rather than a
- * confusing ownership message. Cascades to the ticket's TicketComments
- * (onDelete: Cascade in prisma/schema.prisma). Redirects to the Kanban board
- * on success.
+ * Deletes a Ticket. Gated to ADMIN_MANAGE_ROLES -- admin only. This is
+ * deliberately narrower than the TICKET_MANAGE_ROLES gate on
+ * createTicket/updateTicket, and it supersedes the technician-ownership
+ * model this action used to implement. Deleting a ticket destroys billing
+ * history, so the action is restricted to the role accountable for that
+ * data: technicians close tickets, they don't delete them.
+ *
+ * requireRole REDIRECTS (to /unauthorized) rather than returning an error,
+ * so an unauthorized caller never reaches this body. Nothing here, and no
+ * caller, can surface a "not allowed" message from a return value -- there
+ * is no return value to inspect.
+ *
+ * The delete cascades to BOTH of the ticket's children: its TicketComments
+ * and its TimeEntries (each declares onDelete: Cascade on its `ticket`
+ * relation -- see model TicketComment and model TimeEntry). The TimeEntry
+ * cascade is the dangerous one. TimeEntry.invoiceLineItem is nullable and
+ * declared onDelete: SetNull, so the database neither blocks this delete nor
+ * propagates it upward: InvoiceLineItem rows hang off Invoice, survive
+ * untouched, and the invoice keeps its subtotal and total while the time
+ * records justifying those amounts quietly disappear. That is billing-history
+ * corruption with no error anywhere, which is why this action refuses up
+ * front when any of the ticket's time entries is already invoiced. model
+ * Invoice has no invoice-number field, so the refusal names the invoice by
+ * the fields that exist and mean something to an admin: company, period and
+ * status.
+ *
+ * The invoiced-time query runs BEFORE db.ticket.delete so a refused admin
+ * gets the billing error rather than a generic not-found; a
+ * concurrently-deleted or nonexistent ticket still falls through to the
+ * existing P2025 "Ticket not found" path. Redirects to the Kanban board on
+ * success.
  */
 export async function deleteTicket(id: string) {
-  const user = await requireRole(TICKET_MANAGE_ROLES);
+  await requireRole(ADMIN_MANAGE_ROLES);
 
-  if (user.role === "technician") {
-    const ticket = await db.ticket.findUnique({ where: { id }, select: { assignedToId: true } });
+  const invoicedEntry = await db.timeEntry.findFirst({
+    where: { ticketId: id, invoiceLineItemId: { not: null } },
+    orderBy: [{ startedAt: "asc" }, { id: "asc" }],
+    select: {
+      invoiceLineItem: {
+        select: {
+          invoice: {
+            select: {
+              status: true,
+              periodStart: true,
+              periodEnd: true,
+              company: { select: { name: true } },
+            },
+          },
+        },
+      },
+    },
+  });
 
-    if (!ticket) {
-      return { error: "Ticket not found" };
-    }
+  const invoice = invoicedEntry?.invoiceLineItem?.invoice;
 
-    if (ticket.assignedToId !== user.id) {
-      return { error: "You can only delete tickets assigned to you" };
-    }
+  if (invoice) {
+    const periodStart = invoicePeriodFormatter.format(invoice.periodStart);
+    const periodEnd = invoicePeriodFormatter.format(invoice.periodEnd);
+
+    return {
+      error:
+        `Cannot delete: time on this ticket is billed to ${invoice.company.name}'s invoice ` +
+        `for ${periodStart} - ${periodEnd} (${invoice.status}). Void or adjust that invoice first.`,
+    };
   }
 
   try {

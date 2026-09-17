@@ -45,7 +45,6 @@ test("SLA-bearing ticket shows a real SLA badge and is reflected on the SLA comp
 
   // createCompany redirects server-side to /clients/{id} on success.
   await page.waitForURL(/\/clients\/[^/]+$/);
-  const companyUrl = page.url();
 
   // ---- Create an SLA-bearing Contract under that company ----------------
   // Contracts tab is not the default tab (Sites is) -- switch to it.

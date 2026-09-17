@@ -103,11 +103,22 @@ The exception: **09-01 may fix anything under `e2e/` EXCEPT the `test.fixme` blo
 `e2e/tickets.spec.ts`**, which 09-03 owns. If 09-01's run surfaces a failure inside that block, it
 records the finding and leaves the file to 09-03.
 
-## Known environment hazard
+## Environment hazard — RESOLVED by 09-01, and it was never real
 
-The suite was observed passing 45/45 during the Phase 8 session, but only after hand-bridging a
-browser layout mismatch: the project pins `@playwright/test ^1.62.1`, which expects
-`chromium_headless_shell-1234`, while this image ships `-1194` with a different internal directory
-layout (`chrome-linux/headless_shell` vs `chrome-headless-shell-linux64/chrome-headless-shell`).
-**That bridge is not evidence for this phase's first criterion.** 09-01 must either perform a
-clean `npx playwright install chromium` or record the exact environment-specific step required.
+**Corrected 2026-09-17 after 09-01 executed.** This section previously warned that the browser
+install required a manual workaround. It did not.
+
+What actually happened: during the Phase 8 session the suite was made to pass 45/45 by hand-building
+symlinks from the paths `@playwright/test ^1.62.1` expects (`chromium_headless_shell-1234/...`) to
+the image's shipped `-1194` build — **including forged zero-byte `INSTALLATION_COMPLETE` and
+`DEPENDENCIES_VALIDATED` sentinels**, which are what Playwright checks to decide a browser is
+installed. That made the bridge invisible to tooling: nothing could tell it from a real install.
+
+09-01 removed the symlinks and sentinels, then ran `npx playwright install chromium` — **exit 0,
+first attempt, no fallback needed.** It fetched Chrome for Testing 151.0.7922.34 from
+`cdn.playwright.dev`, which the egress proxy serves fine. Verified genuine: a 197 MB stripped ELF
+binary and zero symlinks in the installed trees.
+
+**A reproducible command was available the whole time.** The manual bridge was unnecessary, and it
+produced a green run that proved nothing. A contributor on a clean checkout can run this suite with
+no manual step. Do not reintroduce the symlinks.

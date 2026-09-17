@@ -104,14 +104,17 @@ bites, the failure signature will say so and the separate-test-database decision
 evidence. D1 records that evidence either way — including a positive statement when no
 parallelism failure occurs.
 
-### 3.7 The browser install must be real
+### 3.7 The browser install must be real — SETTLED 2026-09-17
 
-During Phase 8's session the suite was run 45/45 green, but only after hand-bridging a browser
-layout mismatch: the project pins `@playwright/test ^1.62.1`, which expects
-`chromium_headless_shell-1234`, while the image ships `-1194` with a different internal layout.
-**That bridge is not evidence for D1.** D1 requires either a clean `npx playwright install
-chromium` or an explicit, recorded statement of the environment-specific step required, so that
-"passes against a real browser" is not quietly resting on a symlink.
+This section required D1 to rest on a real install rather than the symlink bridge built by hand
+during Phase 8. **09-01 settled it: `npx playwright install chromium` succeeds unaided in this
+image, exit 0 on the first attempt.** The bridge was never necessary.
+
+Retained because the failure mode is instructive, not because the constraint is live. The Phase 8
+bridge included forged `INSTALLATION_COMPLETE` sentinels, so Playwright could not distinguish it
+from a genuine install — a green suite resting on it looked exactly like a green suite resting on
+a real browser. That is the shape of false evidence this phase exists to eliminate, and it was
+produced by the same process that later wrote the criterion warning against it.
 
 ## 4. Acceptance checks
 
